@@ -19,6 +19,93 @@ var supportedTypes = map[string]bool{
 	"MX": true, "NS": true, "SRV": true, "SPFM": true,
 }
 
+// ResolvedRecord pairs a concrete entree.Record with the conflict-mode info
+// from its source TemplateRecord. ApplyTemplate consumes this to drive the
+// per-record conflict handling in apply.go (D-17).
+type ResolvedRecord struct {
+	Record entree.Record
+	Mode   string
+	Prefix string
+}
+
+// ResolveDetailed is Resolve plus per-record conflict metadata.
+func (t *Template) ResolveDetailed(vars map[string]string) ([]ResolvedRecord, error) {
+	logger := t.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	out := make([]ResolvedRecord, 0, len(t.Records))
+	for i, r := range t.Records {
+		typ := strings.ToUpper(strings.TrimSpace(r.Type))
+		if !supportedTypes[typ] {
+			logger.Warn("template: skipping unknown record type", "index", i, "type", r.Type)
+			continue
+		}
+		recs, err := t.resolveOne(i, r, typ, vars)
+		if err != nil {
+			return nil, err
+		}
+		prefix, err := substitute(r.TxtConflictMatchingPrefix, vars, i, "txtConflictMatchingPrefix")
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, ResolvedRecord{Record: recs, Mode: r.TxtConflictMatchingMode, Prefix: prefix})
+	}
+	return out, nil
+}
+
+// resolveOne resolves a single TemplateRecord into an entree.Record. Shared by
+// Resolve and ResolveDetailed.
+func (t *Template) resolveOne(i int, r TemplateRecord, typ string, vars map[string]string) (entree.Record, error) {
+	pointsTo := r.PointsTo
+	if pointsTo == "" {
+		pointsTo = r.Target
+	}
+	host, err := substitute(r.Host, vars, i, "host")
+	if err != nil {
+		return entree.Record{}, err
+	}
+	pointsToSub, err := substitute(pointsTo, vars, i, "pointsTo")
+	if err != nil {
+		return entree.Record{}, err
+	}
+	dataSub, err := substitute(r.Data, vars, i, "data")
+	if err != nil {
+		return entree.Record{}, err
+	}
+	if err := validateHost(host); err != nil {
+		return entree.Record{}, fmt.Errorf("template: record %d host: %w", i, err)
+	}
+	if typ == "TXT" {
+		if err := validateTXTData(dataSub); err != nil {
+			return entree.Record{}, fmt.Errorf("template: record %d data: %w", i, err)
+		}
+	}
+	if typ == "CNAME" || typ == "A" || typ == "AAAA" || typ == "MX" || typ == "NS" || typ == "SRV" {
+		if err := validatePointsTo(typ, pointsToSub); err != nil {
+			return entree.Record{}, fmt.Errorf("template: record %d pointsTo: %w", i, err)
+		}
+	}
+	rec := entree.Record{Type: typ, Name: host, TTL: r.TTL}
+	switch typ {
+	case "TXT", "SPFM":
+		rec.Content = dataSub
+	case "MX":
+		rec.Content = pointsToSub
+		rec.Priority = r.Priority
+	case "SRV":
+		rec.Content = pointsToSub
+		rec.Priority = r.Priority
+		rec.Weight = r.Weight
+		rec.Port = r.Port
+		rec.Service = r.Service
+		rec.Protocol = r.Protocol
+	default:
+		rec.Content = pointsToSub
+	}
+	return rec, nil
+}
+
 // Resolve substitutes variables and validates each TemplateRecord, returning
 // a slice of concrete entree.Records. Unknown record types are skipped with
 // a warning per D-18.

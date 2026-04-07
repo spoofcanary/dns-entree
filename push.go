@@ -39,8 +39,22 @@ func NewPushService(provider Provider) *PushService {
 	return &PushService{provider: provider, logger: slog.Default()}
 }
 
+// Provider returns the underlying Provider. Used by higher-level orchestrators
+// (e.g. template.ApplyTemplate) that need raw GetRecords/DeleteRecord access
+// for conflict resolution.
+func (s *PushService) Provider() Provider { return s.provider }
+
 // verifyFunc is a package-level seam so tests can stub DNS verification.
 var verifyFunc = Verify
+
+// SetVerifyFuncForTest replaces the package-level verify seam and returns a
+// restore function. Intended for use by external test packages (e.g.
+// template) that need offline push verification.
+func SetVerifyFuncForTest(fn func(ctx context.Context, domain string, opts VerifyOpts) (VerifyResult, error)) func() {
+	prev := verifyFunc
+	verifyFunc = fn
+	return func() { verifyFunc = prev }
+}
 
 func normalizeHost(s string) string {
 	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(s)), ".")
