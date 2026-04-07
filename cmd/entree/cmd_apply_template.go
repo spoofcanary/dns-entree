@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"github.com/spf13/cobra"
 	entree "github.com/spoofcanary/dns-entree"
@@ -27,7 +28,7 @@ func applyTemplateRun(cmd *cobra.Command, args []string) error {
 
 	// Non-TTY write path requires --yes (D-11).
 	if !dryRun {
-		if err := RequireYes(IsTTY(nil), flagYes); err != nil {
+		if err := RequireYes(IsTTY(os.Stdout), flagYes); err != nil {
 			return err
 		}
 	}
