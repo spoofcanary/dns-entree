@@ -31,10 +31,10 @@ func seedFakeCache(t *testing.T) string {
 		"description":  "Synthetic template for tests",
 		"records": []map[string]any{
 			{
-				"type":     "TXT",
-				"host":     "@",
-				"data":     "v=spf1 include:%spfinclude% -all",
-				"ttl":      300,
+				"type": "TXT",
+				"host": "@",
+				"data": "v=spf1 include:%spfinclude% -all",
+				"ttl":  300,
 			},
 			{
 				"type":     "CNAME",

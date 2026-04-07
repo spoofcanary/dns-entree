@@ -1,12 +1,14 @@
 // push-dkim pushes a DKIM CNAME via AWS Route 53.
 //
 // Prereqs:
-//   export DNSENTREE_AWS_ACCESS_KEY_ID=...
-//   export DNSENTREE_AWS_SECRET_ACCESS_KEY=...
-//   export DNSENTREE_AWS_REGION=us-east-1
+//
+//	export DNSENTREE_AWS_ACCESS_KEY_ID=...
+//	export DNSENTREE_AWS_SECRET_ACCESS_KEY=...
+//	export DNSENTREE_AWS_REGION=us-east-1
 //
 // Run:
-//   go run . example.com selector1 selector1.dkim.provider.com
+//
+//	go run . example.com selector1 selector1.dkim.provider.com
 package main
 
 import (

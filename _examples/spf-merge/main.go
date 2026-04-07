@@ -1,7 +1,8 @@
 // spf-merge is the library equivalent of `entree spf-merge`. Pure, no I/O.
 //
 // Run:
-//   go run . "v=spf1 include:_spf.google.com ~all" servers.mcsv.net
+//
+//	go run . "v=spf1 include:_spf.google.com ~all" servers.mcsv.net
 package main
 
 import (

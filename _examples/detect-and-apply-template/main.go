@@ -3,10 +3,12 @@
 // applies it via a Cloudflare PushService.
 //
 // Prereqs:
-//   export DNSENTREE_CLOUDFLARE_TOKEN=...
+//
+//	export DNSENTREE_CLOUDFLARE_TOKEN=...
 //
 // Run:
-//   go run . example.com exampleservice.com template1
+//
+//	go run . example.com exampleservice.com template1
 package main
 
 import (

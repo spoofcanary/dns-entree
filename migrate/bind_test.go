@@ -50,12 +50,12 @@ func TestBINDImport_Basic(t *testing.T) {
 		}
 	}
 	want := map[string]bool{
-		"A|example.com":         false,
-		"A|www.example.com":     false,
-		"MX|mail.example.com":   false,
-		"TXT|_dmarc.example.com": false,
+		"A|example.com":           false,
+		"A|www.example.com":       false,
+		"MX|mail.example.com":     false,
+		"TXT|_dmarc.example.com":  false,
 		"CNAME|alias.example.com": false,
-		"NS|example.com":        false,
+		"NS|example.com":          false,
 	}
 	for _, r := range z.Records {
 		k := r.Type + "|" + r.Name

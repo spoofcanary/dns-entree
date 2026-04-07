@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	entree "github.com/spoofcanary/dns-entree"
 	"github.com/miekg/dns"
+	entree "github.com/spoofcanary/dns-entree"
 )
 
 // fakeAdapter is a migrate.Adapter that returns a fixed ZoneInfo. The test
@@ -29,8 +29,8 @@ type fakeProvider struct {
 	applied []entree.Record
 }
 
-func (p *fakeProvider) Name() string { return "fake" }
-func (p *fakeProvider) Slug() string { return "fake-migrate" }
+func (p *fakeProvider) Name() string                                      { return "fake" }
+func (p *fakeProvider) Slug() string                                      { return "fake-migrate" }
 func (p *fakeProvider) Verify(ctx context.Context) ([]entree.Zone, error) { return nil, nil }
 func (p *fakeProvider) GetRecords(ctx context.Context, domain, recordType string) ([]entree.Record, error) {
 	return nil, nil

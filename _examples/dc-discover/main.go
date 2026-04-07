@@ -2,7 +2,8 @@
 // the provider settings.
 //
 // Run:
-//   go run . example.com
+//
+//	go run . example.com
 package main
 
 import (

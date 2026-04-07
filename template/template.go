@@ -27,16 +27,16 @@ type Template struct {
 
 // TemplateRecord mirrors a single record entry inside a DC template.
 type TemplateRecord struct {
-	Type                      string `json:"type"`
-	Host                      string `json:"host"`
-	PointsTo                  string `json:"pointsTo"`
-	Target                    string `json:"target"` // some templates use "target"
+	Type                      string  `json:"type"`
+	Host                      string  `json:"host"`
+	PointsTo                  string  `json:"pointsTo"`
+	Target                    string  `json:"target"` // some templates use "target"
 	Data                      string  `json:"data"`
 	TTL                       flexInt `json:"ttl"`
-	GroupID                   string `json:"groupId"`
-	Essential                 string `json:"essential"`
-	TxtConflictMatchingMode   string `json:"txtConflictMatchingMode"`
-	TxtConflictMatchingPrefix string `json:"txtConflictMatchingPrefix"`
+	GroupID                   string  `json:"groupId"`
+	Essential                 string  `json:"essential"`
+	TxtConflictMatchingMode   string  `json:"txtConflictMatchingMode"`
+	TxtConflictMatchingPrefix string  `json:"txtConflictMatchingPrefix"`
 
 	// MX / SRV optional fields. flexInt accepts both JSON numbers and quoted
 	// strings; some official templates encode "priority": "10".

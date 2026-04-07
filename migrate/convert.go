@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	entree "github.com/spoofcanary/dns-entree"
 	"github.com/miekg/dns"
+	entree "github.com/spoofcanary/dns-entree"
 )
 
 // rrToRecord converts a miekg/dns.RR to an entree.Record. It returns

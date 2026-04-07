@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	entree "github.com/spoofcanary/dns-entree"
 	"github.com/miekg/dns"
+	entree "github.com/spoofcanary/dns-entree"
 )
 
 // ScrapeOptions configures ScrapeZone.

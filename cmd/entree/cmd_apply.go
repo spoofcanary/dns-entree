@@ -6,8 +6,8 @@ import (
 	"os"
 	"strings"
 
-	entree "github.com/spoofcanary/dns-entree"
 	"github.com/spf13/cobra"
+	entree "github.com/spoofcanary/dns-entree"
 )
 
 // runTemplateBranch is declared in coordination_hook.go and populated by 05-03.

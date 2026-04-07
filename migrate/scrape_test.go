@@ -12,8 +12,8 @@ import (
 
 // fakeZone holds an in-memory authoritative zone for testing.
 type fakeZone struct {
-	domain   string
-	records  []dns.RR
+	domain    string
+	records   []dns.RR
 	allowAXFR bool
 }
 

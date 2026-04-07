@@ -1,10 +1,12 @@
 // push-dmarc pushes a DMARC TXT record via Cloudflare.
 //
 // Prereqs:
-//   export DNSENTREE_CLOUDFLARE_TOKEN=...
+//
+//	export DNSENTREE_CLOUDFLARE_TOKEN=...
 //
 // Run:
-//   go run . example.com dmarc@example.com
+//
+//	go run . example.com dmarc@example.com
 package main
 
 import (

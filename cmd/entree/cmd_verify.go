@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	entree "github.com/spoofcanary/dns-entree"
 	"github.com/spf13/cobra"
+	entree "github.com/spoofcanary/dns-entree"
 )
 
 type verifyData struct {

@@ -39,9 +39,9 @@ type okEnvelope struct {
 }
 
 type errEnvelope struct {
-	OK            bool        `json:"ok"`
-	SchemaVersion int         `json:"schema_version"`
-	Error         errPayload  `json:"error"`
+	OK            bool       `json:"ok"`
+	SchemaVersion int        `json:"schema_version"`
+	Error         errPayload `json:"error"`
 }
 
 type errPayload struct {
