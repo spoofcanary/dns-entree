@@ -1,0 +1,35 @@
+# dns-entree
+
+> Go library and CLI for DNS provider operations: idempotent record push with post-push verification, SPF merge, provider detection, and Domain Connect v2 discovery, signing, and template apply.
+
+## Docs
+
+- [README](README.md): project overview, quickstart, feature list
+- [AGENTS.md](AGENTS.md): machine-readable feature surface, library entry points, CLI JSON schemas, exit codes, env vars
+- [SPEC.md](SPEC.md): functional and non-functional requirements
+- [Getting Started](docs/getting-started.md): library install and first push
+- [CLI Reference](docs/cli.md): generated cobra command reference
+- [Stability Tiers](docs/stability.md): per-package API stability guarantees
+
+## Guides
+
+- [Push Service](docs/guides/push-service.md): idempotent push and verify semantics
+- [SPF Merge](docs/guides/spf-merge.md): merge rules and the 10-lookup limit
+- [Domain Connect](docs/guides/domain-connect.md): discovery, signing, apply URLs
+- [Templates](docs/guides/templates.md): load, resolve, apply Domain Connect templates
+- [Provider Detection](docs/guides/provider-detection.md): NS patterns and RDAP fallback
+
+## Providers
+
+- [Cloudflare](docs/providers/cloudflare.md): credential setup, required token scopes
+- [Route 53](docs/providers/route53.md): IAM policy, region configuration
+- [GoDaddy](docs/providers/godaddy.md): API key creation, production access caveats
+- [Google Cloud DNS](docs/providers/gcdns.md): service account permissions
+
+## Examples
+
+- [push-dmarc](_examples/push-dmarc/): push a DMARC TXT record via Cloudflare
+- [push-dkim](_examples/push-dkim/): push a DKIM CNAME via Route 53
+- [detect-and-apply-template](_examples/detect-and-apply-template/): detect provider and apply a DC template
+- [spf-merge](_examples/spf-merge/): library equivalent of `entree spf-merge`
+- [dc-discover](_examples/dc-discover/): Domain Connect v2 discovery
