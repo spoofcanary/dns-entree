@@ -1,0 +1,27 @@
+{
+  "providerId": "test.example",
+  "providerName": "Test Provider",
+  "serviceId": "string-priority",
+  "serviceName": "String numeric fields",
+  "version": 1,
+  "records": [
+    {
+      "type": "MX",
+      "host": "@",
+      "pointsTo": "mail.example.net",
+      "priority": "10",
+      "ttl": 3600
+    },
+    {
+      "type": "SRV",
+      "host": "@",
+      "target": "sip.example.net",
+      "service": "_sip",
+      "protocol": "_tcp",
+      "priority": "5",
+      "weight": "20",
+      "port": "5060",
+      "ttl": 3600
+    }
+  ]
+}

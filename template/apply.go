@@ -85,6 +85,15 @@ func dispatchRecord(
 		return pushSvc.PushCNAMERecord(ctx, domain, rec.Name, rec.Content)
 	case "SPFM":
 		include := extractInclude(rec.Content)
+		if include == "" {
+			// Some official templates ship SPFM with no data; the include is
+			// encoded elsewhere or simply absent. Skip rather than fail.
+			return &entree.PushResult{
+				Status:      entree.StatusAlreadyConfigured,
+				RecordName:  rec.Name,
+				RecordValue: "",
+			}, nil
+		}
 		return pushSvc.PushSPFRecord(ctx, domain, []string{include})
 	case "A", "AAAA", "MX", "NS", "SRV":
 		return pushSvc.PushGenericRecord(ctx, domain, rec)

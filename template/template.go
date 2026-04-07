@@ -33,19 +33,47 @@ type TemplateRecord struct {
 	Host                      string `json:"host"`
 	PointsTo                  string `json:"pointsTo"`
 	Target                    string `json:"target"` // some templates use "target"
-	Data                      string `json:"data"`
-	TTL                       int    `json:"ttl"`
+	Data                      string  `json:"data"`
+	TTL                       flexInt `json:"ttl"`
 	GroupID                   string `json:"groupId"`
 	Essential                 string `json:"essential"`
 	TxtConflictMatchingMode   string `json:"txtConflictMatchingMode"`
 	TxtConflictMatchingPrefix string `json:"txtConflictMatchingPrefix"`
 
-	// MX / SRV optional fields.
-	Priority int    `json:"priority"`
-	Weight   int    `json:"weight"`
-	Port     int    `json:"port"`
-	Service  string `json:"service"`
-	Protocol string `json:"protocol"`
+	// MX / SRV optional fields. flexInt accepts both JSON numbers and quoted
+	// strings; some official templates encode "priority": "10".
+	Priority flexInt `json:"priority"`
+	Weight   flexInt `json:"weight"`
+	Port     flexInt `json:"port"`
+	Service  string  `json:"service"`
+	Protocol string  `json:"protocol"`
+}
+
+// flexInt is an int that unmarshals from either a JSON number or a JSON string
+// containing an integer. Empty string and JSON null decode to 0.
+type flexInt int
+
+// UnmarshalJSON implements lenient int parsing for template fields.
+func (f *flexInt) UnmarshalJSON(b []byte) error {
+	if len(b) == 0 || string(b) == "null" {
+		*f = 0
+		return nil
+	}
+	// Strip surrounding quotes if present.
+	s := string(b)
+	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
+		s = s[1 : len(s)-1]
+	}
+	if s == "" {
+		*f = 0
+		return nil
+	}
+	var n int
+	if _, err := fmt.Sscanf(s, "%d", &n); err != nil {
+		return fmt.Errorf("template: invalid integer %q: %w", s, err)
+	}
+	*f = flexInt(n)
+	return nil
 }
 
 // LoadOption configures Load* calls.

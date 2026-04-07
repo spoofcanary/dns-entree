@@ -86,18 +86,24 @@ func (t *Template) resolveOne(i int, r TemplateRecord, typ string, vars map[stri
 			return entree.Record{}, fmt.Errorf("template: record %d pointsTo: %w", i, err)
 		}
 	}
-	rec := entree.Record{Type: typ, Name: host, TTL: r.TTL}
+	rec := entree.Record{Type: typ, Name: host, TTL: int(r.TTL)}
 	switch typ {
-	case "TXT", "SPFM":
+	case "TXT":
 		rec.Content = dataSub
+	case "SPFM":
+		// SPFM include source: prefer data, fall back to pointsTo/target.
+		rec.Content = dataSub
+		if rec.Content == "" {
+			rec.Content = pointsToSub
+		}
 	case "MX":
 		rec.Content = pointsToSub
-		rec.Priority = r.Priority
+		rec.Priority = int(r.Priority)
 	case "SRV":
 		rec.Content = pointsToSub
-		rec.Priority = r.Priority
-		rec.Weight = r.Weight
-		rec.Port = r.Port
+		rec.Priority = int(r.Priority)
+		rec.Weight = int(r.Weight)
+		rec.Port = int(r.Port)
 		rec.Service = r.Service
 		rec.Protocol = r.Protocol
 	default:
@@ -167,19 +173,19 @@ func (t *Template) Resolve(vars map[string]string) ([]entree.Record, error) {
 		rec := entree.Record{
 			Type: typ,
 			Name: host,
-			TTL:  r.TTL,
+			TTL:  int(r.TTL),
 		}
 		switch typ {
 		case "TXT", "SPFM":
 			rec.Content = dataSub
 		case "MX":
 			rec.Content = pointsToSub
-			rec.Priority = r.Priority
+			rec.Priority = int(r.Priority)
 		case "SRV":
 			rec.Content = pointsToSub
-			rec.Priority = r.Priority
-			rec.Weight = r.Weight
-			rec.Port = r.Port
+			rec.Priority = int(r.Priority)
+			rec.Weight = int(r.Weight)
+			rec.Port = int(r.Port)
 			rec.Service = r.Service
 			rec.Protocol = r.Protocol
 		default: // CNAME, A, AAAA, NS
@@ -296,6 +302,11 @@ func validatePointsTo(typ, val string) error {
 	}
 	if val == "" {
 		return fmt.Errorf("pointsTo is empty")
+	}
+	// Bare "@" means the apex domain (Domain Connect convention). Pass through;
+	// downstream apply layer substitutes the real domain when pushing.
+	if val == "@" {
+		return nil
 	}
 	if strings.ContainsAny(val, " \t;") {
 		return fmt.Errorf("pointsTo contains forbidden character")

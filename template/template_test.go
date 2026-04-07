@@ -92,6 +92,24 @@ func TestLoadTemplateJSON_Empty(t *testing.T) {
 	}
 }
 
+func TestLoadTemplateFile_StringPriority(t *testing.T) {
+	tmpl, err := LoadTemplateFile(filepath.Join("testdata", "string_priority.json"))
+	if err != nil {
+		t.Fatalf("LoadTemplateFile: %v", err)
+	}
+	if len(tmpl.Records) != 2 {
+		t.Fatalf("Records len = %d", len(tmpl.Records))
+	}
+	mx := tmpl.Records[0]
+	if int(mx.Priority) != 10 {
+		t.Errorf("MX priority = %d, want 10", int(mx.Priority))
+	}
+	srv := tmpl.Records[1]
+	if int(srv.Priority) != 5 || int(srv.Weight) != 20 || int(srv.Port) != 5060 {
+		t.Errorf("SRV fields wrong: prio=%d weight=%d port=%d", int(srv.Priority), int(srv.Weight), int(srv.Port))
+	}
+}
+
 func TestLoadTemplateFile_NotFound(t *testing.T) {
 	if _, err := LoadTemplateFile("testdata/nonexistent.json"); err == nil {
 		t.Error("expected error for missing file")

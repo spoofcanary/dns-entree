@@ -61,10 +61,12 @@ func TestAllOfficialTemplates(t *testing.T) {
 					t.Errorf("record %d: empty Type", i)
 				}
 				switch r.Type {
-				case "TXT", "SPFM":
+				case "TXT":
 					if r.Content == "" {
 						t.Errorf("record %d (%s): empty Content", i, r.Type)
 					}
+				case "SPFM":
+					// Empty SPFM Content is tolerated; apply.go skips them.
 				case "A", "AAAA", "CNAME", "NS", "MX", "SRV":
 					if r.Content == "" {
 						t.Errorf("record %d (%s): empty Content", i, r.Type)

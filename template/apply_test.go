@@ -292,6 +292,60 @@ func TestApplyTemplate_SPFMRouting(t *testing.T) {
 	}
 }
 
+func TestApplyTemplate_ApexCNAME(t *testing.T) {
+	stubVerifyAlways(t)
+	fp := newFakeProvider()
+	svc := entree.NewPushService(fp)
+	tmpl := mkTemplate(TemplateRecord{
+		Type: "CNAME", Host: "alias.example.com", PointsTo: "@",
+	})
+	_, err := ApplyTemplate(context.Background(), svc, "example.com", tmpl, nil)
+	if err != nil {
+		t.Fatalf("apex CNAME pointsTo=@ should resolve, got: %v", err)
+	}
+	if len(fp.setCalls) != 1 || fp.setCalls[0].Content != "@" {
+		t.Errorf("setCalls=%+v", fp.setCalls)
+	}
+}
+
+func TestApplyTemplate_SPFMEmptyDataSkipped(t *testing.T) {
+	stubVerifyAlways(t)
+	fp := newFakeProvider()
+	svc := entree.NewPushService(fp)
+	tmpl := mkTemplate(TemplateRecord{
+		Type: "SPFM", Host: "example.com", // no Data, no PointsTo
+	})
+	results, err := ApplyTemplate(context.Background(), svc, "example.com", tmpl, nil)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("results=%d", len(results))
+	}
+	if results[0].Status == entree.StatusFailed {
+		t.Errorf("expected non-failed status for empty SPFM, got %+v", results[0])
+	}
+	if len(fp.setCalls) != 0 {
+		t.Errorf("expected no set calls, got %+v", fp.setCalls)
+	}
+}
+
+func TestApplyTemplate_SPFMPointsToFallback(t *testing.T) {
+	stubVerifyAlways(t)
+	fp := newFakeProvider()
+	svc := entree.NewPushService(fp)
+	tmpl := mkTemplate(TemplateRecord{
+		Type: "SPFM", Host: "example.com", PointsTo: "_spf.fallback.com",
+	})
+	_, err := ApplyTemplate(context.Background(), svc, "example.com", tmpl, nil)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if len(fp.setCalls) != 1 || !strings.Contains(fp.setCalls[0].Content, "include:_spf.fallback.com") {
+		t.Errorf("expected include from pointsTo fallback, got %+v", fp.setCalls)
+	}
+}
+
 func TestApplyTemplate_ResolveError(t *testing.T) {
 	stubVerifyAlways(t)
 	fp := newFakeProvider()
