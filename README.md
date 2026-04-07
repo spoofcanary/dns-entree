@@ -1,5 +1,7 @@
 # dns-entree
 
+> Entri charges $249/month for the appetizer. The entree is free.
+
 Provider-agnostic DNS automation for any record type (TXT, CNAME, A, AAAA, MX, NS, SRV) with idempotent writes, post-push verification, SPF merging, Domain Connect, and a template engine - usable as a Go library, a CLI, and an agent-callable tool. First-class helpers for email authentication (DMARC, DKIM, SPF, BIMI) on top of a generic DNS core.
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/spoofcanary/dns-entree.svg)](https://pkg.go.dev/github.com/spoofcanary/dns-entree)
