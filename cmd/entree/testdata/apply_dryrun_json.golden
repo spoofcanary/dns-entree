@@ -1,0 +1,1 @@
+{"ok":true,"schema_version":1,"data":{"records":[{"type":"TXT","name":"_dmarc.example.com","current":"","proposed":"v=DMARC1","action":"CREATE"}]}}

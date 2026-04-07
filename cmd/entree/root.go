@@ -18,6 +18,10 @@ const (
 	ctxKeyLogger    ctxKey = "logger"
 )
 
+// activeFormatter is set in PersistentPreRunE so Execute() can emit structured
+// errors even when cobra's context propagation differs between root and sub.
+var activeFormatter *Formatter
+
 // Global flag values.
 var (
 	flagJSON            bool
@@ -44,6 +48,7 @@ var rootCmd = &cobra.Command{
 		level := parseLogLevel(flagLogLevel)
 		logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 		f := &Formatter{Mode: mode, Out: os.Stdout, Err: os.Stderr}
+		activeFormatter = f
 		ctx := context.WithValue(cmd.Context(), ctxKeyFormatter, f)
 		ctx = context.WithValue(ctx, ctxKeyLogger, logger)
 		cmd.SetContext(ctx)
@@ -100,7 +105,10 @@ func Execute() int {
 	if err == nil {
 		return ExitOK
 	}
-	f := formatterFromCtx(rootCmd.Context())
+	f := activeFormatter
+	if f == nil {
+		f = formatterFromCtx(rootCmd.Context())
+	}
 	code, msg, details := classifyForOutput(err)
 	_ = f.EmitError(code, msg, details)
 	return ClassifyExit(err)

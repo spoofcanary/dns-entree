@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	entree "github.com/spoofcanary/dns-entree"
 )
@@ -106,6 +107,9 @@ func parseAndExtract(data []byte, provider string) (entree.Credentials, error) {
 			Code: "CREDENTIALS_PARSE_FAILED",
 			Msg:  "credentials file is not valid JSON",
 		}
+	}
+	if strings.HasPrefix(provider, "fake") {
+		return entree.Credentials{}, nil
 	}
 	switch provider {
 	case "cloudflare":

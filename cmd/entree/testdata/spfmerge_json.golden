@@ -1,0 +1,1 @@
+{"ok":true,"schema_version":1,"data":{"value":"v=spf1 include:_spf.example.com ~all","changed":true,"broken_input":false,"lookup_count":1,"lookup_limit_exceeded":false,"warnings":null}}
