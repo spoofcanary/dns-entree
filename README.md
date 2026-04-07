@@ -86,6 +86,29 @@ GoDaddy is hostile to small customers who want API access. Their production API 
 
 The good news: $2/year Discount Domain Club lifts the gate immediately. The bad news: you have to pay GoDaddy $2/year for the privilege of owning the domain you already paid them for. If you have the option, migrate DNS to Cloudflare (free) or Route 53 (pay per query) instead. See [docs/providers/godaddy.md](docs/providers/godaddy.md) for details.
 
+## HTTP API
+
+dns-entree also ships as a stateless HTTP server so non-Go callers can use it via plain JSON. Every request carries its own credentials in headers; the server holds nothing between requests and is designed to run behind a reverse proxy that handles TLS and auth.
+
+```sh
+# Standalone server binary
+go install github.com/spoofcanary/dns-entree/cmd/entree-api@latest
+entree-api --listen :8080
+
+# Or use the same server from the CLI binary
+entree serve --listen :8080
+```
+
+Hit it from anywhere:
+
+```sh
+curl -sS http://localhost:8080/v1/detect \
+  -H 'Content-Type: application/json' \
+  -d '{"domain":"example.com"}'
+```
+
+The OpenAPI 3.1 spec is served at `/v1/openapi.yaml`. See [docs/http-api.md](docs/http-api.md) for the deployment model, full flag/env reference, error codes, metrics, and a curl example for every endpoint.
+
 ## Install
 
 ```sh
@@ -94,6 +117,9 @@ go get github.com/spoofcanary/dns-entree
 
 # CLI
 go install github.com/spoofcanary/dns-entree/cmd/entree@latest
+
+# HTTP server
+go install github.com/spoofcanary/dns-entree/cmd/entree-api@latest
 ```
 
 Requires Go 1.26 or later.
