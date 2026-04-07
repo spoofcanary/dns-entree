@@ -10,19 +10,19 @@ import (
 	"strings"
 	"time"
 
-	entree "github.com/spoofcanary/dns-entree"
 	"github.com/spf13/cobra"
+	entree "github.com/spoofcanary/dns-entree"
 	"github.com/spoofcanary/dns-entree/migrate"
 )
 
 // Flags shared by zone export/import and migrate.
 var (
-	flagZoneOutput      string
-	flagZoneFormat      string
-	flagZoneLabels      []string
-	flagZoneLabelsOnly  []string
-	flagZoneLabelsFile  string
-	flagZoneNoAXFR      bool
+	flagZoneOutput     string
+	flagZoneFormat     string
+	flagZoneLabels     []string
+	flagZoneLabelsOnly []string
+	flagZoneLabelsFile string
+	flagZoneNoAXFR     bool
 
 	flagZoneImportFrom    string
 	flagZoneImportTo      string
@@ -33,13 +33,13 @@ var (
 
 // zoneExportEnvelope is the schema_version:1 data payload for `zone export`.
 type zoneExportData struct {
-	SchemaVersion int              `json:"schema_version"`
-	Command       string           `json:"command"`
-	Domain        string           `json:"domain"`
-	Source        string           `json:"source"`
-	Nameservers   []string         `json:"nameservers"`
-	Records       []entree.Record  `json:"records"`
-	Warnings      []string         `json:"warnings,omitempty"`
+	SchemaVersion int             `json:"schema_version"`
+	Command       string          `json:"command"`
+	Domain        string          `json:"domain"`
+	Source        string          `json:"source"`
+	Nameservers   []string        `json:"nameservers"`
+	Records       []entree.Record `json:"records"`
+	Warnings      []string        `json:"warnings,omitempty"`
 }
 
 var zoneCmd = &cobra.Command{
@@ -152,9 +152,9 @@ func runZoneImport(cmd *cobra.Command, args []string) error {
 	}
 
 	return runMigrateCore(cmd, domain, flagZoneImportTo, migrateCoreOpts{
-		zone:    zone,
-		dryRun:  flagZoneDryRun,
-		rate:    flagZoneRate,
+		zone:          zone,
+		dryRun:        flagZoneDryRun,
+		rate:          flagZoneRate,
 		skipAXFR:      true,
 		verifyTimeout: flagZoneVerifyTimeout,
 	})
@@ -382,19 +382,19 @@ func runMigrateCore(cmd *cobra.Command, domain, slug string, opts migrateCoreOpt
 }
 
 type migrateReportJSON struct {
-	SchemaVersion    int              `json:"schema_version"`
-	Command          string           `json:"command"`
-	Domain           string           `json:"domain"`
-	Applied          bool             `json:"applied"`
-	Source           string           `json:"source"`
-	SourceProvider   string           `json:"source_provider,omitempty"`
-	TargetZoneStatus string           `json:"target_zone_status"`
-	TargetZone       migrateZoneJSON  `json:"target_zone"`
-	Preview          []entree.Record  `json:"preview"`
-	Results          []resultJSON     `json:"results,omitempty"`
-	Warnings         []string         `json:"warnings,omitempty"`
-	Errors           []string         `json:"errors,omitempty"`
-	NSChange         string           `json:"ns_change,omitempty"`
+	SchemaVersion    int             `json:"schema_version"`
+	Command          string          `json:"command"`
+	Domain           string          `json:"domain"`
+	Applied          bool            `json:"applied"`
+	Source           string          `json:"source"`
+	SourceProvider   string          `json:"source_provider,omitempty"`
+	TargetZoneStatus string          `json:"target_zone_status"`
+	TargetZone       migrateZoneJSON `json:"target_zone"`
+	Preview          []entree.Record `json:"preview"`
+	Results          []resultJSON    `json:"results,omitempty"`
+	Warnings         []string        `json:"warnings,omitempty"`
+	Errors           []string        `json:"errors,omitempty"`
+	NSChange         string          `json:"ns_change,omitempty"`
 }
 
 type migrateZoneJSON struct {
