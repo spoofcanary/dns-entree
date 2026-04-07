@@ -1,8 +1,9 @@
 // Package entree is a provider-agnostic DNS automation library for pushing
-// email-auth and verification records (DMARC, DKIM, SPF, BIMI, TXT/CNAME
-// proofs) across Cloudflare, Route 53, GoDaddy, and Google Cloud DNS with
-// idempotent writes, post-push verification, SPF merging, Domain Connect
-// discovery/signing, and a template engine.
+// any DNS record type (TXT, CNAME, A, AAAA, MX, NS, SRV) across Cloudflare,
+// Route 53, GoDaddy, and Google Cloud DNS with idempotent writes, post-push
+// verification, SPF merging, Domain Connect discovery/signing, and a
+// template engine. First-class helpers exist for email authentication
+// (DMARC, DKIM, SPF, BIMI) on top of the generic DNS core.
 //
 // The primary entry point for most callers is [PushService], which wraps any
 // [Provider] with idempotent upsert + post-push DNS verification:

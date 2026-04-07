@@ -1,6 +1,6 @@
 # dns-entree
 
-Provider-agnostic DNS automation for email-auth records (DMARC, DKIM, SPF, BIMI) with idempotent writes, post-push verification, SPF merging, Domain Connect, and a template engine - usable as a Go library, a CLI, and an agent-callable tool.
+Provider-agnostic DNS automation for any record type (TXT, CNAME, A, AAAA, MX, NS, SRV) with idempotent writes, post-push verification, SPF merging, Domain Connect, and a template engine - usable as a Go library, a CLI, and an agent-callable tool. First-class helpers for email authentication (DMARC, DKIM, SPF, BIMI) on top of a generic DNS core.
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/spoofcanary/dns-entree.svg)](https://pkg.go.dev/github.com/spoofcanary/dns-entree)
 [![Go Report Card](https://goreportcard.com/badge/github.com/spoofcanary/dns-entree)](https://goreportcard.com/report/github.com/spoofcanary/dns-entree)
