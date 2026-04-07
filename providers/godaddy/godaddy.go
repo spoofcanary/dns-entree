@@ -8,8 +8,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
+
+	"golang.org/x/time/rate"
 
 	entree "github.com/spoofcanary/dns-entree"
 )
@@ -24,10 +27,14 @@ func init() {
 
 // Provider is the GoDaddy DNS provider.
 type Provider struct {
-	apiKey    string
-	apiSecret string
-	baseURL   string
-	client    *http.Client
+	apiKey     string
+	apiSecret  string
+	baseURL    string
+	client     *http.Client
+	limiter    *rate.Limiter
+	maxRetries int
+	// retrySleep is overridable in tests to keep them fast.
+	retrySleep func(d time.Duration)
 }
 
 var _ entree.Provider = (*Provider)(nil)
@@ -45,7 +52,94 @@ func NewProvider(apiKey, apiSecret string) (*Provider, error) {
 		apiSecret: apiSecret,
 		baseURL:   defaultBaseURL,
 		client:    &http.Client{Timeout: 15 * time.Second},
+		// GoDaddy enforces 60 req/min — 1 req/sec sustained with a small burst.
+		limiter:    rate.NewLimiter(rate.Limit(1), 2),
+		maxRetries: 3,
+		retrySleep: time.Sleep,
 	}, nil
+}
+
+// do executes an HTTP request through the rate limiter with retry on 429 and
+// 5xx responses. Honors Retry-After when present, otherwise uses exponential
+// backoff (500ms, 1s, 2s). Non-429 4xx responses are returned immediately.
+// Returns the final response (caller must Close Body) or an error.
+func (p *Provider) do(req *http.Request) (*http.Response, error) {
+	ctx := req.Context()
+	var lastResp *http.Response
+	var lastErr error
+
+	// Buffer body so retries can re-send it.
+	var bodyBytes []byte
+	if req.Body != nil {
+		var err error
+		bodyBytes, err = io.ReadAll(req.Body)
+		if err != nil {
+			return nil, fmt.Errorf("godaddy: read request body: %w", err)
+		}
+		_ = req.Body.Close()
+	}
+
+	for attempt := 0; attempt <= p.maxRetries; attempt++ {
+		if err := p.limiter.Wait(ctx); err != nil {
+			return nil, fmt.Errorf("godaddy: rate limiter: %w", err)
+		}
+
+		// Rebuild body reader on each attempt.
+		if bodyBytes != nil {
+			req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+			req.GetBody = func() (io.ReadCloser, error) {
+				return io.NopCloser(bytes.NewReader(bodyBytes)), nil
+			}
+		}
+
+		resp, err := p.client.Do(req)
+		if err != nil {
+			lastErr = err
+			// Network errors are retried with backoff.
+			if attempt == p.maxRetries {
+				return nil, fmt.Errorf("godaddy: http request: %w", err)
+			}
+			p.retrySleep(backoffDuration(attempt))
+			continue
+		}
+
+		// Success or non-retryable client error.
+		if resp.StatusCode < 500 && resp.StatusCode != http.StatusTooManyRequests {
+			return resp, nil
+		}
+
+		// Retryable: 429 or 5xx.
+		lastResp = resp
+		if attempt == p.maxRetries {
+			return resp, nil
+		}
+
+		wait := backoffDuration(attempt)
+		if ra := resp.Header.Get("Retry-After"); ra != "" {
+			if secs, perr := strconv.Atoi(ra); perr == nil && secs >= 0 {
+				wait = time.Duration(secs) * time.Second
+			}
+		}
+		// Drain + close before retry so connection can be reused.
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		lastResp = nil
+		p.retrySleep(wait)
+	}
+
+	if lastResp != nil {
+		return lastResp, nil
+	}
+	return nil, lastErr
+}
+
+// backoffDuration returns 500ms * 2^attempt (500ms, 1s, 2s, ...).
+func backoffDuration(attempt int) time.Duration {
+	d := 500 * time.Millisecond
+	for i := 0; i < attempt; i++ {
+		d *= 2
+	}
+	return d
 }
 
 func (p *Provider) Name() string { return "GoDaddy" }
@@ -69,7 +163,7 @@ func (p *Provider) Verify(ctx context.Context) ([]entree.Zone, error) {
 	}
 	req.Header.Set("Authorization", p.authHeader())
 
-	resp, err := p.client.Do(req)
+	resp, err := p.do(req)
 	if err != nil {
 		return nil, fmt.Errorf("godaddy: list domains: %w", err)
 	}
@@ -142,7 +236,7 @@ func (p *Provider) fetchRecords(ctx context.Context, url string) ([]godaddyRecor
 	}
 	req.Header.Set("Authorization", p.authHeader())
 
-	resp, err := p.client.Do(req)
+	resp, err := p.do(req)
 	if err != nil {
 		return nil, fmt.Errorf("godaddy: get records: %w", err)
 	}
@@ -224,7 +318,7 @@ func (p *Provider) SetRecord(ctx context.Context, domain string, record entree.R
 	req.Header.Set("Authorization", p.authHeader())
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := p.client.Do(req)
+	resp, err := p.do(req)
 	if err != nil {
 		return fmt.Errorf("godaddy: set record: %w", err)
 	}
@@ -251,7 +345,7 @@ func (p *Provider) DeleteRecord(ctx context.Context, domain, recordID string) er
 	}
 	req.Header.Set("Authorization", p.authHeader())
 
-	resp, err := p.client.Do(req)
+	resp, err := p.do(req)
 	if err != nil {
 		return fmt.Errorf("godaddy: delete record: %w", err)
 	}

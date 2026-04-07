@@ -8,7 +8,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	"golang.org/x/time/rate"
 
 	entree "github.com/spoofcanary/dns-entree"
 )
@@ -21,6 +25,9 @@ func newTestProvider(t *testing.T, h http.HandlerFunc) (*Provider, *httptest.Ser
 		t.Fatalf("NewProvider: %v", err)
 	}
 	p.baseURL = srv.URL
+	// Disable rate-limit waits for tests (Inf allows any rate).
+	p.limiter = rate.NewLimiter(rate.Inf, 1)
+	p.retrySleep = func(time.Duration) {}
 	return p, srv
 }
 
@@ -281,3 +288,106 @@ func TestRegistration(t *testing.T) {
 
 // suppress unused import warning when fmt is unused after edits
 var _ = fmt.Sprintf
+
+func TestDo_Retries429WithRetryAfter(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&calls, 1)
+		if n < 3 {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"code":"TOO_MANY_REQUESTS"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`[{"domain":"example.com","status":"ACTIVE"}]`))
+	}))
+	defer srv.Close()
+
+	p, err := NewProvider("KEY", "SECRET")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.baseURL = srv.URL
+	p.limiter = rate.NewLimiter(rate.Inf, 1)
+	p.retrySleep = func(time.Duration) {}
+
+	zones, err := p.Verify(context.Background())
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if len(zones) != 1 {
+		t.Fatalf("zones=%+v", zones)
+	}
+	if got := atomic.LoadInt32(&calls); got != 3 {
+		t.Fatalf("expected 3 attempts (2x429 then 200), got %d", got)
+	}
+}
+
+func TestDo_Retries5xx(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&calls, 1)
+		if n == 1 {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer srv.Close()
+
+	p, _ := NewProvider("K", "S")
+	p.baseURL = srv.URL
+	p.limiter = rate.NewLimiter(rate.Inf, 1)
+	p.retrySleep = func(time.Duration) {}
+
+	if _, err := p.Verify(context.Background()); err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 2 {
+		t.Fatalf("expected 2 attempts, got %d", got)
+	}
+}
+
+func TestDo_NoRetryOn4xx(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"bad"}`))
+	}))
+	defer srv.Close()
+
+	p, _ := NewProvider("K", "S")
+	p.baseURL = srv.URL
+	p.limiter = rate.NewLimiter(rate.Inf, 1)
+	p.retrySleep = func(time.Duration) {}
+
+	if _, err := p.Verify(context.Background()); err == nil {
+		t.Fatal("expected error on 400")
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("expected 1 attempt (no retry on 4xx), got %d", got)
+	}
+}
+
+func TestDo_ExhaustRetriesReturnsLast429(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	p, _ := NewProvider("K", "S")
+	p.baseURL = srv.URL
+	p.limiter = rate.NewLimiter(rate.Inf, 1)
+	p.retrySleep = func(time.Duration) {}
+
+	if _, err := p.Verify(context.Background()); err == nil {
+		t.Fatal("expected error after exhausting retries")
+	}
+	// 1 initial + 3 retries = 4 calls.
+	if got := atomic.LoadInt32(&calls); got != 4 {
+		t.Fatalf("expected 4 attempts (1+3 retries), got %d", got)
+	}
+}
