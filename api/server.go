@@ -52,6 +52,7 @@ func NewServer(opts Options) *Server {
 		mux:     http.NewServeMux(),
 	}
 	s.registerWave1Routes()
+	registerCoreRoutes(s)
 	return s
 }
 
