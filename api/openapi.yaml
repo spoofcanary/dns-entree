@@ -6,6 +6,16 @@ info:
     Stateless HTTP facade over the dns-entree library. Plan 06-04 fills the
     full operation set; this stub exists so the binary can serve a valid
     document from /v1/openapi.yaml during wave-1 development.
+
+    NOTE (plan 06-03): POST /v1/migrate and POST /v1/zone/import accept
+    provider credentials inside the JSON request body (fields
+    `target_credentials` and `source_credentials`) rather than via
+    X-Entree-* headers, because a migration touches two providers at once
+    and the header scheme only has room for one. Body-embedded credentials
+    are never logged (the slog middleware only records
+    method/path/status/duration/request_id per D-18). POST /v1/dc/apply-url
+    accepts the RSA private key as `opts.private_key_pem` in the body for
+    the same reason; headers would be logged by upstream reverse proxies.
 servers:
   - url: http://localhost:8080
 paths:

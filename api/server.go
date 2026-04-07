@@ -53,6 +53,7 @@ func NewServer(opts Options) *Server {
 	}
 	s.registerWave1Routes()
 	registerCoreRoutes(s)
+	registerExtraRoutes(s)
 	return s
 }
 
