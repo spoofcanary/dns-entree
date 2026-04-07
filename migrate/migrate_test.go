@@ -206,3 +206,46 @@ func TestMigrate_DryRun_NoApply(t *testing.T) {
 		t.Error("preview should have records")
 	}
 }
+
+func TestMigrate_PreloadedZone_NoFilesystem(t *testing.T) {
+	// Hand-built zone — Migrate must use it directly without touching the
+	// filesystem or issuing any DNS queries.
+	preloaded := &Zone{
+		Domain: "example.com",
+		Source: "preloaded",
+		Records: []entree.Record{
+			{Type: "A", Name: "example.com", Content: "192.0.2.50", TTL: 300},
+			{Type: "TXT", Name: "_dmarc.example.com", Content: "v=DMARC1; p=none", TTL: 300},
+		},
+	}
+
+	RegisterAdapter("fake-migrate-preloaded", &fakeAdapter{
+		info: ZoneInfo{Nameservers: []string{"ns1.fake."}, Created: true},
+	})
+
+	tgtZone := &fakeZone{domain: "example.com"}
+	prov := &fakeProvider{zone: tgtZone}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	report, err := Migrate(ctx, MigrateOptions{
+		Domain:         "example.com",
+		TargetSlug:     "fake-migrate-preloaded",
+		TargetProvider: prov,
+		PreloadedZone:  preloaded,
+		// Intentionally set a bogus SourceBindFile to prove PreloadedZone wins.
+		SourceBindFile:   "/nonexistent/should-not-be-read.bind",
+		Apply:            false,
+		SkipSourceDetect: true,
+	})
+	if err != nil {
+		t.Fatalf("preloaded migrate: %v", err)
+	}
+	if report.Source != "preloaded" {
+		t.Errorf("source = %q, want preloaded", report.Source)
+	}
+	if len(report.Preview) != 2 {
+		t.Errorf("preview len = %d, want 2", len(report.Preview))
+	}
+}

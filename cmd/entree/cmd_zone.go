@@ -343,20 +343,10 @@ func runMigrateCore(cmd *cobra.Command, domain, slug string, opts migrateCoreOpt
 		},
 	}
 
-	// If caller pre-loaded a zone (import path), stash records via BIND file
-	// trick is not available; instead we bypass ScrapeZone by writing a temp
-	// BIND file. Simpler: invoke migrate.Migrate with a temp BIND file.
-	var tmpBind string
+	// If caller pre-loaded a zone (import path), pass it directly to Migrate
+	// to avoid a lossy BIND round-trip through a temp file.
 	if opts.zone != nil {
-		f, err := os.CreateTemp("", "entree-zone-*.bind")
-		if err != nil {
-			return &RuntimeError{Code: "TEMP_WRITE_FAILED", Msg: err.Error()}
-		}
-		_, _ = f.WriteString(renderBIND(opts.zone))
-		_ = f.Close()
-		tmpBind = f.Name()
-		defer os.Remove(tmpBind)
-		mopts.SourceBindFile = tmpBind
+		mopts.PreloadedZone = opts.zone
 	}
 
 	report, runErr := migrate.Migrate(ctx, mopts)

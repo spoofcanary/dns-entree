@@ -18,10 +18,14 @@ type MigrateOptions struct {
 	ProviderOpts   ProviderOpts
 	ScrapeOpts     ScrapeOptions
 	SourceBindFile string
-	Apply          bool
-	RatePerSecond  float64
-	VerifyTimeout  time.Duration
-	QueryTimeout   time.Duration
+	// PreloadedZone bypasses both SourceBindFile and ScrapeZone when non-nil.
+	// Used by callers that already hold a parsed *Zone in memory (e.g.
+	// `entree zone import`) to avoid a lossy BIND round-trip.
+	PreloadedZone *Zone
+	Apply         bool
+	RatePerSecond float64
+	VerifyTimeout time.Duration
+	QueryTimeout  time.Duration
 	// SourceProviderSlug overrides automatic source registrar detection.
 	SourceProviderSlug string
 	// SkipSourceDetect disables the DetectProvider network call (used by tests).
@@ -55,9 +59,12 @@ func Migrate(ctx context.Context, opts MigrateOptions) (*MigrationReport, error)
 	// ------- Phase A: acquire source zone.
 	var zone *Zone
 	var err error
-	if opts.SourceBindFile != "" {
+	switch {
+	case opts.PreloadedZone != nil:
+		zone, err = opts.PreloadedZone, nil
+	case opts.SourceBindFile != "":
 		zone, err = ImportBINDFile(opts.SourceBindFile, opts.Domain)
-	} else {
+	default:
 		zone, err = ScrapeZone(ctx, opts.Domain, opts.ScrapeOpts)
 	}
 	if err != nil {
