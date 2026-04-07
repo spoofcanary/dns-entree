@@ -75,8 +75,14 @@ Add `--json` to any command for agent-friendly structured output.
 | ------------------------------------------------ | ----------------- | ------------------------------ | -------------- | --------------------------------------- |
 | [Cloudflare](docs/providers/cloudflare.md)       | cloudflare        | Scoped API token               | n/a            | Zone:Read + DNS:Edit permissions        |
 | [Amazon Route 53](docs/providers/route53.md)     | route53           | IAM access/secret key          | n/a            | Uses ChangeBatch for ApplyRecords       |
-| [GoDaddy](docs/providers/godaddy.md)             | godaddy           | API key + secret               | yes            | Prod API requires 10+ domains on account |
+| [GoDaddy](docs/providers/godaddy.md)             | godaddy           | API key + secret               | no (Entri gate) | API gated: needs 10+ domains *or* Discount Domain Club (~$2/yr) |
 | [Google Cloud DNS](docs/providers/gcdns.md)      | google_cloud_dns  | OAuth2 bearer + project ID     | n/a            | Caller refreshes the token              |
+
+### A word about GoDaddy
+
+GoDaddy is hostile to small customers who want API access. Their production API returns HTTP 403 on every request unless the account either manages 10+ domains or subscribes to **Discount Domain Club** (~$2/year). The gate is undocumented, there is no error message explaining it, and GoDaddy simultaneously routes their Domain Connect implementation through a paid third-party aggregator (Entri), so the obvious workaround is also blocked. Every other registrar in this list treats API access as a basic feature.
+
+The good news: $2/year Discount Domain Club lifts the gate immediately. The bad news: you have to pay GoDaddy $2/year for the privilege of owning the domain you already paid them for. If you have the option, migrate DNS to Cloudflare (free) or Route 53 (pay per query) instead. See [docs/providers/godaddy.md](docs/providers/godaddy.md) for details.
 
 ## Install
 

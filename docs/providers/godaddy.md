@@ -2,15 +2,30 @@
 
 dns-entree talks to the GoDaddy Domains API v1 directly over HTTP. Authentication is an API key + secret pair.
 
-## IMPORTANT: 10-Domain Restriction
+## IMPORTANT: GoDaddy's Hostile API Gate
 
-**GoDaddy's production API is gatekept. Accounts with fewer than 10 domains on the account receive HTTP 403 on every request**, regardless of API key validity. This is a GoDaddy policy change (circa 2024) and cannot be worked around from dns-entree.
+**GoDaddy gates production API access**. Accounts receive HTTP 403 on every request unless one of the following is true:
 
-If you hit a blanket 403:
+- The account manages **10 or more domains**, OR
+- The account has an active **Discount Domain Club** subscription
 
-- Check domain count on the GoDaddy account. Fewer than 10 -> no API access.
-- Consolidate domains onto an account that clears the threshold, or
-- Fall back to Domain Connect (see [../guides/domain-connect.md](../guides/domain-connect.md)) - GoDaddy supports DC on many zones even when the raw API is blocked.
+This policy change rolled out circa 2024. GoDaddy has never officially documented it; the behavior was reverse-engineered from support threads after an army of small customers lost API access overnight. There is no error message explaining the block, no warning at key-creation time, and no opt-in path other than paying GoDaddy more money.
+
+For context: every other registrar in this library (Cloudflare, Route 53, Google Cloud DNS) treats API access as a basic feature. GoDaddy treats it as a premium tier, *and* gates Domain Connect behind a third-party aggregator (Entri) so you cannot even route around them for free. Small customers are squeezed from both sides.
+
+### Fix: Discount Domain Club (~$2 per year)
+
+The cheapest workaround is to subscribe to **Discount Domain Club**. At ~$2/year it lifts the API gate immediately regardless of domain count. Ugly, but it works and costs less than a single coffee. Sign up at <https://www.godaddy.com/offers/domains/discount-domain-club>.
+
+Once subscribed, the GoDaddy provider in dns-entree works normally.
+
+### Other options
+
+- **Consolidate domains** onto an account that already clears the 10-domain threshold.
+- **Migrate DNS off GoDaddy** to Cloudflare (free plan, free API) or Route 53 (pay per query, free API). dns-entree works identically against those.
+- **Use managed DNS** (delegate nameservers to an account you control) if you host this as a service for end customers.
+
+Do not bother filing support tickets asking GoDaddy to lift the gate. They will not.
 
 ## Credential Setup
 
