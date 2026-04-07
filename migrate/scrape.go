@@ -103,11 +103,17 @@ func axfrTransfer(ctx context.Context, domain, nsAddr string, timeout time.Durat
 	z := &Zone{Domain: domain, Source: "axfr"}
 	soaCount := 0
 	var rrs []dns.RR
+	var transferErr error
 	for env := range envCh {
-		if env.Error != nil {
-			return nil, env.Error
-		}
+		// Accumulate records from every envelope before inspecting error so
+		// that partial transfers can be diagnosed against the SOA count.
 		rrs = append(rrs, env.RR...)
+		if env.Error != nil {
+			transferErr = env.Error
+		}
+	}
+	if transferErr != nil && len(rrs) == 0 {
+		return nil, transferErr
 	}
 	if len(rrs) == 0 {
 		return nil, fmt.Errorf("axfr returned no records")
@@ -134,8 +140,12 @@ func axfrTransfer(ctx context.Context, domain, nsAddr string, timeout time.Durat
 		}
 		z.Records = append(z.Records, rec)
 	}
-	if soaCount == 0 {
-		return nil, fmt.Errorf("axfr response missing SOA")
+	// RFC 5936: a complete AXFR begins AND ends with the same SOA record,
+	// so a successful transfer has exactly two SOAs. soaCount < 2 means the
+	// transfer was truncated mid-stream (e.g. TCP closed after the opening
+	// SOA but before the closing one) and the zone is incomplete.
+	if soaCount < 2 {
+		return nil, fmt.Errorf("axfr incomplete: expected opening and closing SOA (got %d)", soaCount)
 	}
 	return z, nil
 }
