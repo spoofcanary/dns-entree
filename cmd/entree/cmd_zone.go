@@ -204,7 +204,11 @@ func renderBIND(z *migrate.Zone) string {
 		}
 		switch r.Type {
 		case "TXT":
-			content := strings.ReplaceAll(r.Content, `"`, `\"`)
+			// Escape backslashes FIRST, then quotes. Reversing this order
+			// leaves literal backslashes inconsistently escaped and produces
+			// invalid BIND output.
+			content := strings.ReplaceAll(r.Content, `\`, `\\`)
+			content = strings.ReplaceAll(content, `"`, `\"`)
 			fmt.Fprintf(&b, "%s\t%d\tIN\tTXT\t\"%s\"\n", name, ttl, content)
 		case "MX":
 			fmt.Fprintf(&b, "%s\t%d\tIN\tMX\t%d %s\n", name, ttl, r.Priority, ensureDot(r.Content))
