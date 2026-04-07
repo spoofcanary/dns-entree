@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/spf13/cobra"
 	entree "github.com/spoofcanary/dns-entree"
@@ -73,10 +74,7 @@ func applyTemplateRun(cmd *cobra.Command, args []string) error {
 	// wiring, we delegate here via a second hook. If the hook is unset (plan
 	// 05-02 not yet merged), we return a runtime error so users know to update.
 	if applyTemplateExecutor == nil {
-		return &RuntimeError{
-			Code: "NOT_WIRED",
-			Msg:  "apply --template write path requires 05-02 to wire applyTemplateExecutor",
-		}
+		applyTemplateExecutor = defaultApplyTemplateExecutor
 	}
 	results, err := applyTemplateExecutor(ctx, domain, t, vars)
 	if err != nil {
@@ -90,9 +88,35 @@ func applyTemplateRun(cmd *cobra.Command, args []string) error {
 	})
 }
 
-// applyTemplateExecutor is the write-path seam set by 05-02 (which owns
-// provider + credential wiring) and also by tests that inject a fake.
+// applyTemplateExecutor is the write-path seam. Defaults to
+// defaultApplyTemplateExecutor which builds a real provider + PushService from
+// the apply command's --provider / --credentials-file flags. Tests may
+// override it.
 var applyTemplateExecutor func(ctx context.Context, domain string, t *template.Template, vars map[string]string) ([]*entree.PushResult, error)
+
+func defaultApplyTemplateExecutor(ctx context.Context, domain string, t *template.Template, vars map[string]string) ([]*entree.PushResult, error) {
+	slug := flagProvider
+	if slug == "" {
+		det, err := entree.DetectProvider(ctx, domain)
+		if err != nil {
+			return nil, fmt.Errorf("detect provider: %w", err)
+		}
+		if !det.Supported {
+			return nil, fmt.Errorf("provider %q not supported; pass --provider", det.Provider)
+		}
+		slug = string(det.Provider)
+	}
+	creds, err := NewCredentialsLoader(flagCredentialsFile).Load(slug)
+	if err != nil {
+		return nil, err
+	}
+	prov, err := entree.NewProvider(slug, creds)
+	if err != nil {
+		return nil, fmt.Errorf("provider init: %w", err)
+	}
+	push := entree.NewPushService(prov)
+	return template.ApplyTemplate(ctx, push, domain, t, vars)
+}
 
 func pushResultsToJSON(results []*entree.PushResult) []map[string]any {
 	out := make([]map[string]any, 0, len(results))

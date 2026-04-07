@@ -94,6 +94,12 @@ var applyCmd = &cobra.Command{
 	Short: "Apply records or a Domain Connect template to a domain",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if flagApplyTemplate != "" && len(flagApplyRecords) > 0 {
+			return &UserError{Code: "MUTUALLY_EXCLUSIVE_OPS", Msg: "--record and --template are mutually exclusive"}
+		}
+		if flagApplyTemplate == "" && len(flagApplyRecords) == 0 {
+			return &UserError{Code: "NO_OPERATION", Msg: "apply requires --record or --template"}
+		}
 		if flagApplyTemplate != "" {
 			if runTemplateBranch == nil {
 				return &UserError{Code: "TEMPLATE_UNSUPPORTED", Msg: "template support not compiled in"}
@@ -242,5 +248,6 @@ func init() {
 	applyCmd.Flags().StringVar(&flagApplyTemplate, "template", "", "Domain Connect template providerId/serviceId (05-03)")
 	applyCmd.Flags().StringArrayVar(&flagApplyVars, "var", nil, "template variable key=value (repeatable)")
 	applyCmd.Flags().StringVar(&flagApplyVarsFile, "vars-file", "", "template variables JSON file")
+	applyCmd.Flags().String("cache-dir", "", "template cache directory (apply --template)")
 	rootCmd.AddCommand(applyCmd)
 }

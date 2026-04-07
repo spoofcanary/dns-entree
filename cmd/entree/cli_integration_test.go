@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -162,5 +163,145 @@ func TestApplyInvalidRecordSpec(t *testing.T) {
 	}
 	if !strings.Contains(stdout, `"code":"INVALID_RECORD_SPEC"`) {
 		t.Fatalf("expected INVALID_RECORD_SPEC; got %s", stdout)
+	}
+}
+
+// ---- apply --template ----
+
+// seedSubprocessCache creates a minimal template cache layout matching what
+// template.LoadTemplate expects. Mirrors seedFakeCache in cli_template_test.go
+// but usable from subprocess-based tests.
+func seedSubprocessCache(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	provDir := filepath.Join(dir, "fakeprov")
+	if err := os.MkdirAll(provDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tpl := map[string]any{
+		"providerId":   "fakeprov",
+		"providerName": "Fake Provider",
+		"serviceId":    "svc1",
+		"serviceName":  "Fake Service One",
+		"version":      1,
+		"description":  "Synthetic template for subprocess tests",
+		"records": []map[string]any{
+			{"type": "TXT", "host": "@", "data": "v=spf1 include:%spfinclude% -all", "ttl": 300},
+			{"type": "CNAME", "host": "www", "pointsTo": "%target%", "ttl": 3600},
+		},
+	}
+	data, err := json.MarshalIndent(tpl, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(provDir, "fakeprov.svc1.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func applyTemplateArgs(cacheDir string, extra ...string) []string {
+	base := []string{
+		"--json", "apply", "example.com",
+		"--provider", "fake",
+		"--credentials-file", "testdata/credentials_valid.json",
+		"--cache-dir", cacheDir,
+		"--template", "fakeprov/svc1",
+		"--var", "spfinclude=mailer.example.net",
+		"--var", "target=www.example.net",
+	}
+	return append(base, extra...)
+}
+
+func TestApplyTemplateDryRun(t *testing.T) {
+	cache := seedSubprocessCache(t)
+	stdout, stderr, code := runEntree(t, applyTemplateArgs(cache, "--dry-run")...)
+	if code != 0 {
+		t.Fatalf("exit %d stdout=%s stderr=%s", code, stdout, stderr)
+	}
+	var env map[string]any
+	if err := json.Unmarshal([]byte(stdout), &env); err != nil {
+		t.Fatalf("decode envelope: %v; stdout=%s", err, stdout)
+	}
+	if ok, _ := env["ok"].(bool); !ok {
+		t.Fatalf("envelope not ok: %v", env)
+	}
+	data, _ := env["data"].(map[string]any)
+	recs, _ := data["records"].([]any)
+	if len(recs) != 2 {
+		t.Fatalf("want 2 records, got %d: %v", len(recs), data)
+	}
+}
+
+func TestApplyTemplateHappyPath(t *testing.T) {
+	cache := seedSubprocessCache(t)
+	stdout, stderr, code := runEntree(t, applyTemplateArgs(cache, "--yes")...)
+	if code != 0 {
+		t.Fatalf("exit %d stdout=%s stderr=%s", code, stdout, stderr)
+	}
+	var env map[string]any
+	if err := json.Unmarshal([]byte(stdout), &env); err != nil {
+		t.Fatalf("decode envelope: %v; stdout=%s", err, stdout)
+	}
+	if ok, _ := env["ok"].(bool); !ok {
+		t.Fatalf("envelope not ok: %v", env)
+	}
+	data, _ := env["data"].(map[string]any)
+	results, _ := data["results"].([]any)
+	if len(results) == 0 {
+		t.Fatalf("expected results, got %v", data)
+	}
+}
+
+func TestApplyTemplateMissing(t *testing.T) {
+	cache := seedSubprocessCache(t)
+	stdout, _, code := runEntree(t,
+		"--json", "apply", "example.com",
+		"--provider", "fake",
+		"--credentials-file", "testdata/credentials_valid.json",
+		"--cache-dir", cache,
+		"--template", "nope/missing",
+		"--yes",
+	)
+	if code == 0 {
+		t.Fatalf("expected non-zero exit; stdout=%s", stdout)
+	}
+	if !strings.Contains(stdout, `"code":"TEMPLATE_NOT_FOUND"`) {
+		t.Fatalf("expected TEMPLATE_NOT_FOUND; got %s", stdout)
+	}
+}
+
+func TestApplyTemplateRequiresEitherRecordOrTemplate(t *testing.T) {
+	stdout, _, code := runEntree(t, applyArgs("--yes")...)
+	if code != 2 {
+		t.Fatalf("expected exit 2, got %d; stdout=%s", code, stdout)
+	}
+	if !strings.Contains(stdout, `"code":"NO_OPERATION"`) {
+		t.Fatalf("expected NO_OPERATION; got %s", stdout)
+	}
+}
+
+func TestApplyTemplateConflictRecordAndTemplate(t *testing.T) {
+	cache := seedSubprocessCache(t)
+	stdout, _, code := runEntree(t, applyTemplateArgs(cache,
+		"--record", "TXT:_dmarc.example.com:v=DMARC1",
+		"--yes",
+	)...)
+	if code != 2 {
+		t.Fatalf("expected exit 2, got %d; stdout=%s", code, stdout)
+	}
+	if !strings.Contains(stdout, `"code":"MUTUALLY_EXCLUSIVE_OPS"`) {
+		t.Fatalf("expected MUTUALLY_EXCLUSIVE_OPS; got %s", stdout)
+	}
+}
+
+func TestApplyTemplateNonTTYRequiresYes(t *testing.T) {
+	cache := seedSubprocessCache(t)
+	stdout, _, code := runEntree(t, applyTemplateArgs(cache)...)
+	if code != 2 {
+		t.Fatalf("expected exit 2, got %d; stdout=%s", code, stdout)
+	}
+	if !strings.Contains(stdout, `"code":"CONFIRM_REQUIRED"`) {
+		t.Fatalf("expected CONFIRM_REQUIRED; got %s", stdout)
 	}
 }
