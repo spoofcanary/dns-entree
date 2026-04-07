@@ -23,7 +23,7 @@ func TestLoadTemplateFile_SimpleTXT(t *testing.T) {
 		t.Fatalf("Records len = %d", len(tmpl.Records))
 	}
 	r := tmpl.Records[0]
-	if r.Type != "TXT" || r.Host != "@" || r.Data != "verify=%domain%" || r.TTL != 3600 {
+	if r.Type != "TXT" || r.Host != "@" || r.Data != "verify=%domain%" || r.TTL.Value != 3600 {
 		t.Errorf("unexpected record: %+v", r)
 	}
 }
@@ -50,12 +50,12 @@ func TestLoadTemplateFile_MXSRV(t *testing.T) {
 		t.Fatalf("Records len = %d", len(tmpl.Records))
 	}
 	mx := tmpl.Records[0]
-	if mx.Type != "MX" || mx.Priority != 10 || mx.PointsTo != "%mailHost%" {
+	if mx.Type != "MX" || mx.Priority.Value != 10 || mx.PointsTo != "%mailHost%" {
 		t.Errorf("MX wrong: %+v", mx)
 	}
 	srv := tmpl.Records[1]
 	if srv.Type != "SRV" || srv.Service != "_sip" || srv.Protocol != "_tcp" ||
-		srv.Priority != 5 || srv.Weight != 20 || srv.Port != 5060 || srv.Target != "%srvHost%" {
+		srv.Priority.Value != 5 || srv.Weight.Value != 20 || srv.Port.Value != 5060 || srv.Target != "%srvHost%" {
 		t.Errorf("SRV wrong: %+v", srv)
 	}
 }
@@ -101,12 +101,12 @@ func TestLoadTemplateFile_StringPriority(t *testing.T) {
 		t.Fatalf("Records len = %d", len(tmpl.Records))
 	}
 	mx := tmpl.Records[0]
-	if int(mx.Priority) != 10 {
-		t.Errorf("MX priority = %d, want 10", int(mx.Priority))
+	if mx.Priority.Value != 10 {
+		t.Errorf("MX priority = %d, want 10", mx.Priority.Value)
 	}
 	srv := tmpl.Records[1]
-	if int(srv.Priority) != 5 || int(srv.Weight) != 20 || int(srv.Port) != 5060 {
-		t.Errorf("SRV fields wrong: prio=%d weight=%d port=%d", int(srv.Priority), int(srv.Weight), int(srv.Port))
+	if srv.Priority.Value != 5 || srv.Weight.Value != 20 || srv.Port.Value != 5060 {
+		t.Errorf("SRV fields wrong: prio=%d weight=%d port=%d", srv.Priority.Value, srv.Weight.Value, srv.Port.Value)
 	}
 }
 

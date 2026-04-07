@@ -10,8 +10,10 @@ import (
 	entree "github.com/spoofcanary/dns-entree"
 )
 
-// varRegex matches Domain Connect %name% style variables.
-var varRegex = regexp.MustCompile(`%([a-zA-Z0-9_]+)%`)
+// varRegex matches Domain Connect %name% style variables. DC templates in the
+// wild use hyphens inside variable names (e.g. %domain-verify-name%), so the
+// character class includes '-'.
+var varRegex = regexp.MustCompile(`%([a-zA-Z0-9_-]+)%`)
 
 // supportedTypes per D-08. SPFM is recognized so apply.go can route it later.
 var supportedTypes = map[string]bool{
@@ -86,24 +88,43 @@ func (t *Template) resolveOne(i int, r TemplateRecord, typ string, vars map[stri
 			return entree.Record{}, fmt.Errorf("template: record %d pointsTo: %w", i, err)
 		}
 	}
-	rec := entree.Record{Type: typ, Name: host, TTL: int(r.TTL)}
+	ttl, err := r.TTL.resolve(vars, i, "ttl")
+	if err != nil {
+		return entree.Record{}, err
+	}
+	rec := entree.Record{Type: typ, Name: host, TTL: ttl}
 	switch typ {
 	case "TXT":
 		rec.Content = dataSub
 	case "SPFM":
-		// SPFM include source: prefer data, fall back to pointsTo/target.
 		rec.Content = dataSub
 		if rec.Content == "" {
 			rec.Content = pointsToSub
 		}
 	case "MX":
 		rec.Content = pointsToSub
-		rec.Priority = int(r.Priority)
+		prio, err := r.Priority.resolve(vars, i, "priority")
+		if err != nil {
+			return entree.Record{}, err
+		}
+		rec.Priority = prio
 	case "SRV":
 		rec.Content = pointsToSub
-		rec.Priority = int(r.Priority)
-		rec.Weight = int(r.Weight)
-		rec.Port = int(r.Port)
+		prio, err := r.Priority.resolve(vars, i, "priority")
+		if err != nil {
+			return entree.Record{}, err
+		}
+		w, err := r.Weight.resolve(vars, i, "weight")
+		if err != nil {
+			return entree.Record{}, err
+		}
+		p, err := r.Port.resolve(vars, i, "port")
+		if err != nil {
+			return entree.Record{}, err
+		}
+		rec.Priority = prio
+		rec.Weight = w
+		rec.Port = p
 		rec.Service = r.Service
 		rec.Protocol = r.Protocol
 	default:
@@ -114,84 +135,15 @@ func (t *Template) resolveOne(i int, r TemplateRecord, typ string, vars map[stri
 
 // Resolve substitutes variables and validates each TemplateRecord, returning
 // a slice of concrete entree.Records. Unknown record types are skipped with
-// a warning per D-18.
+// a warning per D-18. This is a thin wrapper over ResolveDetailed.
 func (t *Template) Resolve(vars map[string]string) ([]entree.Record, error) {
-	logger := t.logger
-	if logger == nil {
-		logger = slog.Default()
+	detailed, err := t.ResolveDetailed(vars)
+	if err != nil {
+		return nil, err
 	}
-
-	out := make([]entree.Record, 0, len(t.Records))
-	for i, r := range t.Records {
-		typ := strings.ToUpper(strings.TrimSpace(r.Type))
-		if !supportedTypes[typ] {
-			logger.Warn("template: skipping unknown record type",
-				"index", i, "type", r.Type)
-			continue
-		}
-
-		// PointsTo source: prefer pointsTo, fall back to target.
-		pointsTo := r.PointsTo
-		if pointsTo == "" {
-			pointsTo = r.Target
-		}
-
-		host, err := substitute(r.Host, vars, i, "host")
-		if err != nil {
-			return nil, err
-		}
-		pointsToSub, err := substitute(pointsTo, vars, i, "pointsTo")
-		if err != nil {
-			return nil, err
-		}
-		dataSub, err := substitute(r.Data, vars, i, "data")
-		if err != nil {
-			return nil, err
-		}
-		prefixSub, err := substitute(r.TxtConflictMatchingPrefix, vars, i, "txtConflictMatchingPrefix")
-		if err != nil {
-			return nil, err
-		}
-		_ = prefixSub // not part of entree.Record; consumed in apply.go later
-
-		// Per-field validation, post-substitution (D-10).
-		if err := validateHost(host); err != nil {
-			return nil, fmt.Errorf("template: record %d host: %w", i, err)
-		}
-		if typ == "TXT" {
-			if err := validateTXTData(dataSub); err != nil {
-				return nil, fmt.Errorf("template: record %d data: %w", i, err)
-			}
-		}
-		if typ == "CNAME" || typ == "A" || typ == "AAAA" || typ == "MX" || typ == "NS" || typ == "SRV" {
-			if err := validatePointsTo(typ, pointsToSub); err != nil {
-				return nil, fmt.Errorf("template: record %d pointsTo: %w", i, err)
-			}
-		}
-		// SPFM passes through; apply.go handles it.
-
-		rec := entree.Record{
-			Type: typ,
-			Name: host,
-			TTL:  int(r.TTL),
-		}
-		switch typ {
-		case "TXT", "SPFM":
-			rec.Content = dataSub
-		case "MX":
-			rec.Content = pointsToSub
-			rec.Priority = int(r.Priority)
-		case "SRV":
-			rec.Content = pointsToSub
-			rec.Priority = int(r.Priority)
-			rec.Weight = int(r.Weight)
-			rec.Port = int(r.Port)
-			rec.Service = r.Service
-			rec.Protocol = r.Protocol
-		default: // CNAME, A, AAAA, NS
-			rec.Content = pointsToSub
-		}
-		out = append(out, rec)
+	out := make([]entree.Record, 0, len(detailed))
+	for _, d := range detailed {
+		out = append(out, d.Record)
 	}
 	return out, nil
 }
@@ -243,19 +195,20 @@ func validateTXTData(s string) error {
 }
 
 // validateHost enforces DNS label rules per D-09. Empty and "@" are accepted
-// as the apex.
+// as the apex. Leading and trailing dots are tolerated: many DC templates ship
+// fully-qualified hosts like `_dmarc.%domain%.` or `.subdomain`. They are
+// trimmed before label validation.
 func validateHost(host string) error {
 	if err := hasForbiddenChars(host); err != nil {
 		return err
 	}
+	host = strings.TrimSuffix(host, ".")
+	host = strings.TrimPrefix(host, ".")
 	if host == "" || host == "@" {
 		return nil
 	}
 	if strings.ContainsAny(host, " \t;") {
 		return fmt.Errorf("host contains forbidden character")
-	}
-	if strings.HasPrefix(host, ".") || strings.HasSuffix(host, ".") {
-		return fmt.Errorf("host has leading/trailing dot")
 	}
 	if len(host) > 253 {
 		return fmt.Errorf("host exceeds 253 characters")
@@ -270,7 +223,9 @@ func validateHost(host string) error {
 
 // validateDNSLabel enforces single-label rules: 1..63 chars, [a-zA-Z0-9-_*],
 // no leading/trailing hyphen. Underscore allowed (used in _dmarc, _bimi, SRV).
-// Asterisk allowed only as a sole label (wildcard).
+// Asterisk allowed only as a sole label (wildcard). A bare "@" label is
+// accepted as a Domain Connect apex token (appears inside hosts/pointsTo like
+// "mail.@" meaning "mail.<apex>").
 func validateDNSLabel(label string) error {
 	if len(label) == 0 {
 		return fmt.Errorf("empty DNS label")
@@ -278,7 +233,7 @@ func validateDNSLabel(label string) error {
 	if len(label) > 63 {
 		return fmt.Errorf("DNS label exceeds 63 characters")
 	}
-	if label == "*" {
+	if label == "*" || label == "@" {
 		return nil
 	}
 	if label[0] == '-' || label[len(label)-1] == '-' {
@@ -338,6 +293,7 @@ func validatePointsTo(typ, val string) error {
 		return fmt.Errorf("pointsTo must not contain a port")
 	}
 	host := strings.TrimSuffix(val, ".")
+	host = strings.TrimPrefix(host, ".")
 	if len(host) == 0 || len(host) > 253 {
 		return fmt.Errorf("pointsTo length out of range")
 	}

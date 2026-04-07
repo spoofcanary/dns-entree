@@ -70,8 +70,8 @@ func TestResolve_InvalidHostLabel(t *testing.T) {
 	cases := []string{
 		strings.Repeat("a", 64), // label too long
 		"-leading",
-		".dot",
 		"bad host",
+		"label..double",
 	}
 	for _, c := range cases {
 		if _, err := tmpl.Resolve(map[string]string{"h": c}); err == nil {

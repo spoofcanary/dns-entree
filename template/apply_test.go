@@ -240,7 +240,7 @@ func TestApplyTemplate_MXPriorityPreserved(t *testing.T) {
 	fp := newFakeProvider()
 	svc := entree.NewPushService(fp)
 	tmpl := mkTemplate(TemplateRecord{
-		Type: "MX", Host: "example.com", PointsTo: "mail.example.net", Priority: 10,
+		Type: "MX", Host: "example.com", PointsTo: "mail.example.net", Priority: flexInt{Value: 10},
 	})
 	_, err := ApplyTemplate(context.Background(), svc, "example.com", tmpl, nil)
 	if err != nil {
@@ -257,7 +257,7 @@ func TestApplyTemplate_SRVAllFields(t *testing.T) {
 	svc := entree.NewPushService(fp)
 	tmpl := mkTemplate(TemplateRecord{
 		Type: "SRV", Host: "_sip._tcp.example.com", PointsTo: "sip.example.net",
-		Priority: 10, Weight: 20, Port: 5060, Service: "_sip", Protocol: "_tcp",
+		Priority: flexInt{Value: 10}, Weight: flexInt{Value: 20}, Port: flexInt{Value: 5060}, Service: "_sip", Protocol: "_tcp",
 	})
 	_, err := ApplyTemplate(context.Background(), svc, "example.com", tmpl, nil)
 	if err != nil {

@@ -79,23 +79,58 @@ func TestAllOfficialTemplates(t *testing.T) {
 
 // syntheticVars walks every template field that supports %var% substitution
 // and returns a map populated with safe defaults for each unique variable.
+// PointsTo vars on A/AAAA records are forced to valid IPv4/IPv6 regardless of
+// their name, since validatePointsTo enforces literal IP parsing for those.
 func syntheticVars(t *Template) map[string]string {
 	out := map[string]string{}
-	collect := func(s string) {
-		for _, m := range varRegex.FindAllStringSubmatch(s, -1) {
-			name := m[1]
-			if _, ok := out[name]; ok {
-				continue
-			}
-			out[name] = syntheticValue(name)
+	put := func(name, val string) {
+		if _, ok := out[name]; !ok {
+			out[name] = val
 		}
 	}
+	collect := func(s string) {
+		for _, m := range varRegex.FindAllStringSubmatch(s, -1) {
+			put(m[1], syntheticValue(m[1]))
+		}
+	}
+	// Pass 1: walk every string field on every record so no var goes unseeded.
 	for _, r := range t.Records {
 		collect(r.Host)
 		collect(r.PointsTo)
 		collect(r.Target)
 		collect(r.Data)
 		collect(r.TxtConflictMatchingPrefix)
+		collect(r.Service)
+		collect(r.Protocol)
+		collect(r.GroupID)
+		collect(r.Essential)
+		// Deferred ints (priority/weight/port/ttl) may carry %var% in Raw.
+		collect(r.TTL.Raw)
+		collect(r.Priority.Raw)
+		collect(r.Weight.Raw)
+		collect(r.Port.Raw)
+	}
+	// Pass 2: A/AAAA pointsTo vars need real IPs. Override.
+	for _, r := range t.Records {
+		typ := strings.ToUpper(strings.TrimSpace(r.Type))
+		pt := r.PointsTo
+		if pt == "" {
+			pt = r.Target
+		}
+		for _, m := range varRegex.FindAllStringSubmatch(pt, -1) {
+			switch typ {
+			case "A":
+				out[m[1]] = "192.0.2.1"
+			case "AAAA":
+				out[m[1]] = "2001:db8::1"
+			}
+		}
+		// Priority/weight/port deferred ints must resolve to integers.
+		for _, raw := range []string{r.Priority.Raw, r.Weight.Raw, r.Port.Raw, r.TTL.Raw} {
+			for _, m := range varRegex.FindAllStringSubmatch(raw, -1) {
+				out[m[1]] = "10"
+			}
+		}
 	}
 	return out
 }
@@ -105,19 +140,17 @@ func syntheticValue(name string) string {
 	switch {
 	case strings.Contains(n, "ipv6"), strings.Contains(n, "v6"):
 		return "2001:db8::1"
-	case strings.Contains(n, "ip"), strings.Contains(n, "address"):
+	case strings.Contains(n, "ipv4"), strings.Contains(n, "ip"), strings.Contains(n, "address"):
 		return "192.0.2.1"
-	case strings.Contains(n, "email"), strings.Contains(n, "mail") && strings.Contains(n, "addr"):
-		return "test.example.com"
-	case strings.Contains(n, "domain"), strings.Contains(n, "host"), strings.Contains(n, "fqdn"), strings.Contains(n, "target"), strings.Contains(n, "cname"), strings.Contains(n, "mx"), strings.Contains(n, "ns"):
-		return "test.example.com"
-	case strings.Contains(n, "key"), strings.Contains(n, "token"), strings.Contains(n, "id"), strings.Contains(n, "secret"), strings.Contains(n, "code"):
-		return "test-token-123"
+	case strings.Contains(n, "priority"), strings.Contains(n, "weight"), strings.Contains(n, "ttl"):
+		return "10"
 	case strings.Contains(n, "port"):
 		return "443"
-	case strings.Contains(n, "priority"), strings.Contains(n, "weight"):
-		return "10"
-	default:
+	case strings.Contains(n, "domain"), strings.Contains(n, "host"), strings.Contains(n, "fqdn"), strings.Contains(n, "target"), strings.Contains(n, "cname"), strings.Contains(n, "mx"), strings.Contains(n, "ns"), strings.Contains(n, "points"):
 		return "test.example.com"
+	case strings.Contains(n, "key"), strings.Contains(n, "token"), strings.Contains(n, "id"), strings.Contains(n, "secret"), strings.Contains(n, "code"), strings.Contains(n, "value"), strings.Contains(n, "name"), strings.Contains(n, "verify"), strings.Contains(n, "dcv"), strings.Contains(n, "policy"), strings.Contains(n, "region"), strings.Contains(n, "unique"):
+		return "testtoken123"
+	default:
+		return "testvalue"
 	}
 }

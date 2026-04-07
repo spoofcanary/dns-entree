@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 )
 
 // Template mirrors the Domain Connect template JSON schema.
@@ -50,30 +51,59 @@ type TemplateRecord struct {
 }
 
 // flexInt is an int that unmarshals from either a JSON number or a JSON string
-// containing an integer. Empty string and JSON null decode to 0.
-type flexInt int
+// containing an integer. Empty string and JSON null decode to 0. If the string
+// contains a Domain Connect %var% token, parsing is deferred: Value is 0 and
+// Raw holds the unresolved string for substitution at Resolve time.
+type flexInt struct {
+	Value int
+	Raw   string // set only if the field contains a %var% token
+}
 
 // UnmarshalJSON implements lenient int parsing for template fields.
 func (f *flexInt) UnmarshalJSON(b []byte) error {
 	if len(b) == 0 || string(b) == "null" {
-		*f = 0
+		*f = flexInt{}
 		return nil
 	}
-	// Strip surrounding quotes if present.
 	s := string(b)
 	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
 		s = s[1 : len(s)-1]
 	}
 	if s == "" {
-		*f = 0
+		*f = flexInt{}
+		return nil
+	}
+	if strings.Contains(s, "%") {
+		f.Raw = s
+		f.Value = 0
 		return nil
 	}
 	var n int
 	if _, err := fmt.Sscanf(s, "%d", &n); err != nil {
 		return fmt.Errorf("template: invalid integer %q: %w", s, err)
 	}
-	*f = flexInt(n)
+	f.Value = n
+	f.Raw = ""
 	return nil
+}
+
+// resolve returns the int value, substituting %var% from vars if Raw is set.
+func (f flexInt) resolve(vars map[string]string, recIdx int, field string) (int, error) {
+	if f.Raw == "" {
+		return f.Value, nil
+	}
+	sub, err := substitute(f.Raw, vars, recIdx, field)
+	if err != nil {
+		return 0, err
+	}
+	if sub == "" {
+		return 0, nil
+	}
+	var n int
+	if _, err := fmt.Sscanf(sub, "%d", &n); err != nil {
+		return 0, fmt.Errorf("template: record %d %s: invalid integer %q after substitution", recIdx, field, sub)
+	}
+	return n, nil
 }
 
 // LoadOption configures Load* calls.
