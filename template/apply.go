@@ -22,18 +22,37 @@ func ApplyTemplate(
 	tmpl *Template,
 	vars map[string]string,
 ) ([]*entree.PushResult, error) {
+	results, _, err := ApplyTemplateWithReport(ctx, pushSvc, domain, tmpl, vars)
+	return results, err
+}
+
+// ApplyTemplateWithReport behaves like ApplyTemplate but also returns a slice
+// of human-readable warnings produced during apply. Callers (CLI, migration
+// report generators) should surface these to operators. Currently warnings
+// are emitted when conflict mode "All" targets an apex host — see
+// applyConflicts.
+func ApplyTemplateWithReport(
+	ctx context.Context,
+	pushSvc *entree.PushService,
+	domain string,
+	tmpl *Template,
+	vars map[string]string,
+) ([]*entree.PushResult, []string, error) {
 	resolved, err := tmpl.ResolveDetailed(vars)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	results := make([]*entree.PushResult, 0, len(resolved))
+	var warnings []string
 	var errs []error
 
 	for _, rr := range resolved {
 		// Conflict resolution (TXT only, per spec).
 		if rr.Record.Type == "TXT" && rr.Mode != "" && rr.Mode != "None" {
-			if cerr := applyConflicts(ctx, pushSvc, domain, rr); cerr != nil {
+			warns, cerr := applyConflicts(ctx, pushSvc, domain, rr)
+			warnings = append(warnings, warns...)
+			if cerr != nil {
 				results = append(results, &entree.PushResult{
 					Status:      entree.StatusFailed,
 					RecordName:  rr.Record.Name,
@@ -59,9 +78,9 @@ func ApplyTemplate(
 	}
 
 	if len(errs) > 0 {
-		return results, errors.Join(errs...)
+		return results, warnings, errors.Join(errs...)
 	}
-	return results, nil
+	return results, warnings, nil
 }
 
 // dispatchRecord routes a single resolved record to the correct PushService
@@ -108,12 +127,35 @@ func applyConflicts(
 	pushSvc *entree.PushService,
 	domain string,
 	rr ResolvedRecord,
-) error {
+) ([]string, error) {
 	prov := pushSvc.Provider()
 	existing, err := prov.GetRecords(ctx, domain, "TXT")
 	if err != nil {
-		return fmt.Errorf("get existing TXT: %w", err)
+		return nil, fmt.Errorf("get existing TXT: %w", err)
 	}
+
+	var warnings []string
+
+	// Safety warning for conflict mode "All" at the apex. This is spec-
+	// compliant but can wipe SPF, DKIM parent records, Google Site
+	// Verification, and DMARC simultaneously. Do not block — just surface
+	// exactly what's being clobbered so operators can see it.
+	if rr.Mode == "All" && isApexName(rr.Record.Name, domain) {
+		var clobbered []string
+		for _, e := range existing {
+			if e.Name != rr.Record.Name {
+				continue
+			}
+			clobbered = append(clobbered, e.Content)
+		}
+		if len(clobbered) > 0 {
+			warnings = append(warnings, fmt.Sprintf(
+				"conflict mode \"All\" at apex (%s) will delete %d existing TXT record(s): [%s] — risks clobbering SPF, DKIM, Google Site Verification, and DMARC",
+				rr.Record.Name, len(clobbered), strings.Join(clobbered, " | "),
+			))
+		}
+	}
+
 	for _, e := range existing {
 		if e.Name != rr.Record.Name {
 			continue
@@ -135,10 +177,19 @@ func applyConflicts(
 			continue
 		}
 		if err := prov.DeleteRecord(ctx, domain, e.ID); err != nil {
-			return fmt.Errorf("delete %s: %w", e.ID, err)
+			return warnings, fmt.Errorf("delete %s: %w", e.ID, err)
 		}
 	}
-	return nil
+	return warnings, nil
+}
+
+// isApexName reports whether name refers to the zone apex (empty, "@", or the
+// bare domain itself).
+func isApexName(name, domain string) bool {
+	if name == "" || name == "@" {
+		return true
+	}
+	return name == domain
 }
 
 // extractInclude pulls the include target out of an SPF data string. Per D-26,

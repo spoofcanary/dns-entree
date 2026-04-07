@@ -183,6 +183,69 @@ func TestApplyTemplate_AllConflict(t *testing.T) {
 	}
 }
 
+func TestApplyTemplate_AllConflictApexWarning(t *testing.T) {
+	stubVerifyAlways(t)
+	fp := newFakeProvider()
+	fp.records["TXT"] = []entree.Record{
+		{ID: "spf", Type: "TXT", Name: "@", Content: "v=spf1 include:_spf.google.com ~all"},
+		{ID: "gsv", Type: "TXT", Name: "@", Content: "google-site-verification=abc123"},
+		{ID: "other", Type: "TXT", Name: "other.example.com", Content: "untouched"},
+	}
+	svc := entree.NewPushService(fp)
+	tmpl := mkTemplate(TemplateRecord{
+		Type: "TXT", Host: "@", Data: "v=new-apex",
+		TxtConflictMatchingMode: "All",
+	})
+	results, warnings, err := ApplyTemplateWithReport(context.Background(), svc, "example.com", tmpl, nil)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("results=%d", len(results))
+	}
+	// Operation still proceeds — All is spec-compliant.
+	if len(fp.delCalls) != 2 {
+		t.Errorf("expected 2 deletions (spf+gsv), got %v", fp.delCalls)
+	}
+	// Warning must fire and must list the clobbered records.
+	if len(warnings) != 1 {
+		t.Fatalf("expected exactly 1 warning, got %v", warnings)
+	}
+	w := warnings[0]
+	if !strings.Contains(w, "apex") {
+		t.Errorf("warning missing 'apex': %s", w)
+	}
+	if !strings.Contains(w, "v=spf1") {
+		t.Errorf("warning missing SPF content: %s", w)
+	}
+	if !strings.Contains(w, "google-site-verification") {
+		t.Errorf("warning missing GSV content: %s", w)
+	}
+	if !strings.Contains(w, "SPF") || !strings.Contains(w, "DKIM") || !strings.Contains(w, "DMARC") {
+		t.Errorf("warning missing risk callout: %s", w)
+	}
+}
+
+func TestApplyTemplate_AllConflictNonApexNoWarning(t *testing.T) {
+	stubVerifyAlways(t)
+	fp := newFakeProvider()
+	fp.records["TXT"] = []entree.Record{
+		{ID: "a", Type: "TXT", Name: "_dmarc.example.com", Content: "v=DMARC1; p=none"},
+	}
+	svc := entree.NewPushService(fp)
+	tmpl := mkTemplate(TemplateRecord{
+		Type: "TXT", Host: "_dmarc.example.com", Data: "v=DMARC1; p=reject",
+		TxtConflictMatchingMode: "All",
+	})
+	_, warnings, err := ApplyTemplateWithReport(context.Background(), svc, "example.com", tmpl, nil)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Errorf("expected no warnings for non-apex, got %v", warnings)
+	}
+}
+
 func TestApplyTemplate_NoneConflict(t *testing.T) {
 	stubVerifyAlways(t)
 	fp := newFakeProvider()
