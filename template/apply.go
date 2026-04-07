@@ -1,9 +1,3 @@
-// Package template apply.go: ApplyTemplate end-to-end orchestration.
-//
-// Resolves a Template, handles TXT conflict modes (D-16/D-17), dispatches each
-// record through PushService (D-19), and returns one PushResult per record
-// with partial-failure semantics (D-20). SPFM is auto-routed to PushSPFRecord
-// (D-26).
 package template
 
 import (

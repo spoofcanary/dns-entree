@@ -1,4 +1,3 @@
-// Package cloudflare implements the entree.Provider interface for Cloudflare DNS.
 package cloudflare
 
 import (

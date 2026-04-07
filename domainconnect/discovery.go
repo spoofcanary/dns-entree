@@ -1,4 +1,3 @@
-// Package domainconnect implements Domain Connect v2 discovery and signing.
 package domainconnect
 
 import (

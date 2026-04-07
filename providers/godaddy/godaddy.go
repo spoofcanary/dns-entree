@@ -1,4 +1,3 @@
-// Package godaddy implements the entree.Provider interface for GoDaddy DNS.
 package godaddy
 
 import (

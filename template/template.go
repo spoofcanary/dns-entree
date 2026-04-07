@@ -1,6 +1,3 @@
-// Package template implements a Domain Connect template parser, resolver,
-// and (in later plans) syncer + applier. This file covers the type
-// definitions and JSON loading per D-03/D-04/D-05.
 package template
 
 import (

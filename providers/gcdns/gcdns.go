@@ -1,4 +1,3 @@
-// Package gcdns implements the entree.Provider interface for Google Cloud DNS.
 package gcdns
 
 import (

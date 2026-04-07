@@ -1,4 +1,3 @@
-// Package route53 implements the entree.Provider interface for AWS Route 53.
 package route53
 
 import (
