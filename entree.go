@@ -8,6 +8,14 @@ type Record struct {
 	Name    string // full record name, e.g. "_dmarc.example.com"
 	Content string // record value, always unquoted
 	TTL     int    // TTL in seconds (0 = provider default)
+
+	// Optional fields used by MX/SRV records. Zero values mean unset and are
+	// ignored by TXT/CNAME/A/AAAA/NS code paths.
+	Priority int    // MX preference, SRV priority
+	Weight   int    // SRV weight
+	Port     int    // SRV port
+	Service  string // SRV service (e.g. "_sip")
+	Protocol string // SRV protocol (e.g. "_tcp")
 }
 
 // Zone represents a DNS zone.

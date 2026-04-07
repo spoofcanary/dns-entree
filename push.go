@@ -67,6 +67,66 @@ func (s *PushService) runVerify(ctx context.Context, domain string, opts VerifyO
 	}
 }
 
+// PushGenericRecord upserts an A/AAAA/MX/NS/SRV record idempotently with
+// post-push verification. TXT and CNAME callers must use the typed methods
+// (PushTXTRecord/PushCNAMERecord) which carry richer comparison semantics.
+func (s *PushService) PushGenericRecord(ctx context.Context, domain string, record Record) (*PushResult, error) {
+	switch record.Type {
+	case "A", "AAAA", "MX", "NS", "SRV":
+	case "TXT", "CNAME":
+		return &PushResult{Status: StatusFailed, RecordName: record.Name, RecordValue: record.Content},
+			fmt.Errorf("use PushTXTRecord/PushCNAMERecord for %s records", record.Type)
+	default:
+		return &PushResult{Status: StatusFailed, RecordName: record.Name, RecordValue: record.Content},
+			fmt.Errorf("unsupported record type: %s", record.Type)
+	}
+
+	log := s.logger.With("domain", domain, "name", record.Name, "type", record.Type)
+	result := &PushResult{RecordName: record.Name, RecordValue: record.Content}
+
+	records, err := s.provider.GetRecords(ctx, domain, record.Type)
+	if err != nil {
+		result.Status = StatusFailed
+		log.Error("get records failed", "error", err)
+		return result, fmt.Errorf("get records: %w", err)
+	}
+
+	existing := findRecord(records, record.Name)
+	if existing != nil && existing.Content == record.Content &&
+		(record.Type != "MX" || existing.Priority == record.Priority) {
+		result.Status = StatusAlreadyConfigured
+		log.Info("already configured")
+		return result, nil
+	}
+	if existing != nil {
+		result.PreviousValue = existing.Content
+	}
+
+	if record.TTL == 0 {
+		record.TTL = 300
+	}
+
+	if err := s.provider.SetRecord(ctx, domain, record); err != nil {
+		result.Status = StatusFailed
+		log.Error("set record failed", "error", err)
+		return result, fmt.Errorf("set record: %w", err)
+	}
+
+	if existing != nil {
+		result.Status = StatusUpdated
+	} else {
+		result.Status = StatusCreated
+	}
+
+	fingerprint := record.Content
+	if len(fingerprint) > 32 {
+		fingerprint = fingerprint[:32]
+	}
+	s.runVerify(ctx, domain, VerifyOpts{RecordType: record.Type, Name: record.Name, Contains: fingerprint}, result)
+	log.Info("pushed", "status", result.Status, "verified", result.Verified)
+	return result, nil
+}
+
 // PushTXTRecord upserts a TXT record at name with the given content.
 func (s *PushService) PushTXTRecord(ctx context.Context, domain, name, content string) (*PushResult, error) {
 	log := s.logger.With("domain", domain, "name", name, "type", "TXT")

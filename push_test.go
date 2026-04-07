@@ -254,6 +254,155 @@ func TestPushCNAME_TrailingDotIdempotent(t *testing.T) {
 	}
 }
 
+func TestPushGeneric_Create(t *testing.T) {
+	stubVerify(t, true)
+	fp := newFakeProvider()
+	s := NewPushService(fp)
+	res, err := s.PushGenericRecord(context.Background(), "example.com", Record{Type: "A", Name: "www.example.com", Content: "1.2.3.4"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != StatusCreated {
+		t.Errorf("status=%s", res.Status)
+	}
+	if len(fp.setCalls) != 1 || fp.setCalls[0].TTL != 300 {
+		t.Errorf("setCalls=%+v", fp.setCalls)
+	}
+	if !res.Verified {
+		t.Error("expected verified")
+	}
+}
+
+func TestPushGeneric_AlreadyConfigured(t *testing.T) {
+	stubVerify(t, true)
+	fp := newFakeProvider()
+	fp.records["A"] = []Record{{Type: "A", Name: "www.example.com", Content: "1.2.3.4"}}
+	s := NewPushService(fp)
+	res, err := s.PushGenericRecord(context.Background(), "example.com", Record{Type: "A", Name: "www.example.com", Content: "1.2.3.4"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != StatusAlreadyConfigured {
+		t.Errorf("status=%s", res.Status)
+	}
+	if len(fp.setCalls) != 0 {
+		t.Errorf("setCalls=%d", len(fp.setCalls))
+	}
+}
+
+func TestPushGeneric_Update(t *testing.T) {
+	stubVerify(t, true)
+	fp := newFakeProvider()
+	fp.records["A"] = []Record{{Type: "A", Name: "www.example.com", Content: "1.2.3.4"}}
+	s := NewPushService(fp)
+	res, err := s.PushGenericRecord(context.Background(), "example.com", Record{Type: "A", Name: "www.example.com", Content: "5.6.7.8"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != StatusUpdated {
+		t.Errorf("status=%s", res.Status)
+	}
+	if res.PreviousValue != "1.2.3.4" {
+		t.Errorf("prev=%q", res.PreviousValue)
+	}
+}
+
+func TestPushGeneric_GetError(t *testing.T) {
+	stubVerify(t, true)
+	fp := newFakeProvider()
+	fp.getErr = errors.New("boom")
+	s := NewPushService(fp)
+	res, err := s.PushGenericRecord(context.Background(), "example.com", Record{Type: "A", Name: "www.example.com", Content: "1.2.3.4"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if res.Status != StatusFailed {
+		t.Errorf("status=%s", res.Status)
+	}
+}
+
+func TestPushGeneric_SetError(t *testing.T) {
+	stubVerify(t, true)
+	fp := newFakeProvider()
+	fp.setErr = errors.New("boom")
+	s := NewPushService(fp)
+	res, err := s.PushGenericRecord(context.Background(), "example.com", Record{Type: "A", Name: "www.example.com", Content: "1.2.3.4"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if res.Status != StatusFailed {
+		t.Errorf("status=%s", res.Status)
+	}
+}
+
+func TestPushGeneric_VerifyInvoked(t *testing.T) {
+	called := false
+	orig := verifyFunc
+	verifyFunc = func(ctx context.Context, domain string, opts VerifyOpts) (VerifyResult, error) {
+		called = true
+		return VerifyResult{Verified: true, Method: "stub"}, nil
+	}
+	t.Cleanup(func() { verifyFunc = orig })
+	fp := newFakeProvider()
+	s := NewPushService(fp)
+	if _, err := s.PushGenericRecord(context.Background(), "example.com", Record{Type: "A", Name: "www.example.com", Content: "1.2.3.4"}); err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Error("verifyFunc not invoked")
+	}
+}
+
+func TestPushGeneric_MXPreservesPriority(t *testing.T) {
+	stubVerify(t, true)
+	fp := newFakeProvider()
+	s := NewPushService(fp)
+	res, err := s.PushGenericRecord(context.Background(), "example.com", Record{Type: "MX", Name: "example.com", Content: "mx1.example.com", Priority: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != StatusCreated {
+		t.Errorf("status=%s", res.Status)
+	}
+	if len(fp.setCalls) != 1 || fp.setCalls[0].Priority != 10 {
+		t.Errorf("priority not preserved: %+v", fp.setCalls)
+	}
+}
+
+func TestPushGeneric_MXPriorityDifferenceTriggersUpdate(t *testing.T) {
+	stubVerify(t, true)
+	fp := newFakeProvider()
+	fp.records["MX"] = []Record{{Type: "MX", Name: "example.com", Content: "mx1.example.com", Priority: 10}}
+	s := NewPushService(fp)
+	res, err := s.PushGenericRecord(context.Background(), "example.com", Record{Type: "MX", Name: "example.com", Content: "mx1.example.com", Priority: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != StatusUpdated {
+		t.Errorf("status=%s", res.Status)
+	}
+}
+
+func TestPushGeneric_RejectsTXT(t *testing.T) {
+	fp := newFakeProvider()
+	s := NewPushService(fp)
+	_, err := s.PushGenericRecord(context.Background(), "example.com", Record{Type: "TXT", Name: "x", Content: "y"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestRecord_MXLiteralRoundTrip(t *testing.T) {
+	r := Record{Type: "MX", Name: "example.com", Content: "mx1.example.com", Priority: 10}
+	if r.Priority != 10 {
+		t.Errorf("priority=%d", r.Priority)
+	}
+	bare := Record{Type: "TXT", Name: "x", Content: "y"}
+	if bare.Priority != 0 || bare.Weight != 0 || bare.Port != 0 || bare.Service != "" || bare.Protocol != "" {
+		t.Error("zero values not zero")
+	}
+}
+
 func contains(s, sub string) bool {
 	for i := 0; i+len(sub) <= len(s); i++ {
 		if s[i:i+len(sub)] == sub {
