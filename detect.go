@@ -25,8 +25,7 @@ type nsPattern struct {
 	provider ProviderType
 }
 
-// nsPatterns: 16 NS substring -> provider mappings, ported verbatim from
-// the upstream project internal/dns/ns_detect.go (D-17). First match wins.
+// nsPatterns: 16 NS substring -> provider mappings. First match wins.
 var nsPatterns = []nsPattern{
 	{"cloudflare.com", ProviderCloudflare},
 	{"awsdns", ProviderRoute53},

@@ -38,3 +38,7 @@ templates/
 
 # Local Claude memory / planning scratch
 .claude-memory/
+
+# Internal planning + claude context (not shipped)
+.planning/
+CLAUDE.md

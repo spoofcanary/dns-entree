@@ -7,8 +7,8 @@ covered by semver and which may change without warning.
 
 The project is currently **v0.1.0-alpha**. Until v1.0.0 ships, breaking changes
 may land in any release across both stable and unstable tiers. The v0.x line
-exists so we can adjust the API based on real-world usage during the
-initial migration and initial adoption.
+exists so we can adjust the API based on real-world usage during initial
+adoption.
 
 **From v1.0.0 forward**, the project follows strict [Semantic Versioning](https://semver.org/):
 - Stable-tier packages: breaking changes require a major version bump
