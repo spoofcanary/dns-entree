@@ -152,7 +152,10 @@ func (p *Provider) GetRecords(ctx context.Context, domain, recordType string) ([
 	return records, nil
 }
 
-// SetRecord uses delete-then-create upsert (matches upstream production behavior).
+// SetRecord performs an atomic upsert via the Google Cloud DNS Changes.Create
+// batch API. A single Change containing both the deletion of the existing
+// rrset (if any) and the addition of the new rrset is applied transactionally
+// by GCDNS, so callers are never left with a missing record on failure.
 func (p *Provider) SetRecord(ctx context.Context, domain string, record entree.Record) error {
 	zoneID, err := p.findZoneID(ctx, domain)
 	if err != nil {
@@ -174,17 +177,75 @@ func (p *Provider) SetRecord(ctx context.Context, domain string, record entree.R
 		name += "."
 	}
 
-	// Delete existing rrset (POST fails if rrset already exists).
-	_ = p.deleteRRSet(ctx, zoneID, name, record.Type)
+	// Look up existing rrset so we can include it in the Change as a deletion.
+	// GCDNS requires deletions to match the exact existing rrdatas/ttl, so we
+	// fetch the current state rather than guessing.
+	existing, err := p.getRRSet(ctx, zoneID, name, record.Type)
+	if err != nil {
+		return fmt.Errorf("gcdns: lookup existing rrset: %w", err)
+	}
 
-	body := fmt.Sprintf(`{"name":"%s","type":"%s","ttl":%d,"rrdatas":[%q]}`,
-		name, record.Type, ttl, content)
+	change := changeRequest{
+		Additions: []rrset{{
+			Name:    name,
+			Type:    record.Type,
+			TTL:     ttl,
+			Rrdatas: []string{content},
+		}},
+	}
+	if existing != nil {
+		change.Deletions = []rrset{*existing}
+	}
 
-	url := fmt.Sprintf("%s/projects/%s/managedZones/%s/rrsets", p.baseURL, p.projectID, zoneID)
-	if _, err := p.doRequest(ctx, "POST", url, strings.NewReader(body)); err != nil {
-		return fmt.Errorf("gcdns: create record: %w", err)
+	body, err := json.Marshal(change)
+	if err != nil {
+		return fmt.Errorf("gcdns: marshal change: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/projects/%s/managedZones/%s/changes", p.baseURL, p.projectID, zoneID)
+	if _, err := p.doRequest(ctx, "POST", url, strings.NewReader(string(body))); err != nil {
+		return fmt.Errorf("gcdns: apply change: %w", err)
 	}
 	return nil
+}
+
+// rrset mirrors the Google Cloud DNS ResourceRecordSet shape used in
+// Changes.Create request bodies.
+type rrset struct {
+	Name    string   `json:"name"`
+	Type    string   `json:"type"`
+	TTL     int      `json:"ttl"`
+	Rrdatas []string `json:"rrdatas"`
+}
+
+// changeRequest mirrors the Google Cloud DNS Change resource (minimal fields).
+type changeRequest struct {
+	Additions []rrset `json:"additions,omitempty"`
+	Deletions []rrset `json:"deletions,omitempty"`
+}
+
+// getRRSet fetches a single rrset by name+type, returning nil if it does not
+// exist. Used to build transactional Change deletions.
+func (p *Provider) getRRSet(ctx context.Context, zoneID, name, rType string) (*rrset, error) {
+	url := fmt.Sprintf("%s/projects/%s/managedZones/%s/rrsets?name=%s&type=%s",
+		p.baseURL, p.projectID, zoneID, name, rType)
+	data, err := p.doRequest(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	var result struct {
+		Rrsets []rrset `json:"rrsets"`
+	}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("gcdns: parse rrset: %w", err)
+	}
+	for _, rs := range result.Rrsets {
+		if rs.Name == name && rs.Type == rType {
+			r := rs
+			return &r, nil
+		}
+	}
+	return nil, nil
 }
 
 func (p *Provider) DeleteRecord(ctx context.Context, domain, recordID string) error {

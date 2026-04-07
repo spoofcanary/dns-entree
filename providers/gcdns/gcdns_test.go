@@ -114,17 +114,29 @@ func TestGetRecords_TrailingDotStripped(t *testing.T) {
 	}
 }
 
-func TestSetRecord_DeleteBeforeCreate(t *testing.T) {
+func TestSetRecord_AtomicChange(t *testing.T) {
 	var mu sync.Mutex
 	var calls []string
+	var changeBody string
 	p, srv := newTestProvider(t, zonesHandler(
 		`{"managedZones":[{"name":"zone-1","dnsName":"example.com.","id":"1"}]}`,
 		func(w http.ResponseWriter, r *http.Request) {
 			mu.Lock()
-			calls = append(calls, r.Method)
+			calls = append(calls, r.Method+" "+r.URL.Path)
 			mu.Unlock()
-			w.WriteHeader(200)
-			_, _ = w.Write([]byte(`{}`))
+			// GET on /rrsets returns existing rrset for the deletion side.
+			if r.Method == "GET" && strings.HasSuffix(r.URL.Path, "/rrsets") {
+				_, _ = w.Write([]byte(`{"rrsets":[{"name":"example.com.","type":"TXT","ttl":300,"rrdatas":["\"old\""]}]}`))
+				return
+			}
+			if r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/changes") {
+				b, _ := io.ReadAll(r.Body)
+				changeBody = string(b)
+				w.WriteHeader(200)
+				_, _ = w.Write([]byte(`{}`))
+				return
+			}
+			w.WriteHeader(404)
 		}))
 	defer srv.Close()
 
@@ -134,8 +146,76 @@ func TestSetRecord_DeleteBeforeCreate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(calls) < 2 || calls[0] != "DELETE" || calls[1] != "POST" {
-		t.Fatalf("expected DELETE then POST, got %v", calls)
+	// No standalone DELETE call should ever be issued.
+	for _, c := range calls {
+		if strings.HasPrefix(c, "DELETE") {
+			t.Fatalf("unexpected DELETE call: %v", calls)
+		}
+	}
+	// Exactly one POST to /changes carrying both additions and deletions.
+	posts := 0
+	for _, c := range calls {
+		if strings.HasPrefix(c, "POST ") && strings.HasSuffix(c, "/changes") {
+			posts++
+		}
+	}
+	if posts != 1 {
+		t.Fatalf("expected exactly 1 POST /changes, got calls=%v", calls)
+	}
+	if !strings.Contains(changeBody, `"additions"`) || !strings.Contains(changeBody, `"deletions"`) {
+		t.Fatalf("change body missing additions/deletions: %s", changeBody)
+	}
+	if !strings.Contains(changeBody, `\"v=spf1\"`) {
+		t.Fatalf("change body missing new TXT content: %s", changeBody)
+	}
+	if !strings.Contains(changeBody, `\"old\"`) {
+		t.Fatalf("change body missing existing rrdata in deletion: %s", changeBody)
+	}
+}
+
+func TestSetRecord_AtomicChange_NoExisting(t *testing.T) {
+	p, srv := newTestProvider(t, zonesHandler(
+		`{"managedZones":[{"name":"zone-1","dnsName":"example.com.","id":"1"}]}`,
+		func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == "GET" && strings.HasSuffix(r.URL.Path, "/rrsets") {
+				_, _ = w.Write([]byte(`{"rrsets":[]}`))
+				return
+			}
+			if r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/changes") {
+				b, _ := io.ReadAll(r.Body)
+				if strings.Contains(string(b), `"deletions"`) {
+					t.Fatalf("did not expect deletions when no existing rrset: %s", b)
+				}
+				w.WriteHeader(200)
+				_, _ = w.Write([]byte(`{}`))
+				return
+			}
+			w.WriteHeader(404)
+		}))
+	defer srv.Close()
+	if err := p.SetRecord(context.Background(), "example.com", entree.Record{
+		Type: "A", Name: "example.com", Content: "1.2.3.4", TTL: 300,
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// changeHandler returns a handler that serves an empty existing rrset on GET
+// and captures the POST /changes body.
+func changeHandler(bodyPtr *string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" && strings.HasSuffix(r.URL.Path, "/rrsets") {
+			_, _ = w.Write([]byte(`{"rrsets":[]}`))
+			return
+		}
+		if r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/changes") {
+			b, _ := io.ReadAll(r.Body)
+			*bodyPtr = string(b)
+			w.WriteHeader(200)
+			_, _ = w.Write([]byte(`{}`))
+			return
+		}
+		w.WriteHeader(404)
 	}
 }
 
@@ -143,14 +223,7 @@ func TestSetRecord_TXTQuoting(t *testing.T) {
 	var postBody string
 	p, srv := newTestProvider(t, zonesHandler(
 		`{"managedZones":[{"name":"zone-1","dnsName":"example.com.","id":"1"}]}`,
-		func(w http.ResponseWriter, r *http.Request) {
-			if r.Method == "POST" {
-				b, _ := io.ReadAll(r.Body)
-				postBody = string(b)
-			}
-			w.WriteHeader(200)
-			_, _ = w.Write([]byte(`{}`))
-		}))
+		changeHandler(&postBody)))
 	defer srv.Close()
 
 	_ = p.SetRecord(context.Background(), "example.com", entree.Record{
@@ -165,14 +238,7 @@ func TestSetRecord_TrailingDot(t *testing.T) {
 	var postBody string
 	p, srv := newTestProvider(t, zonesHandler(
 		`{"managedZones":[{"name":"zone-1","dnsName":"example.com.","id":"1"}]}`,
-		func(w http.ResponseWriter, r *http.Request) {
-			if r.Method == "POST" {
-				b, _ := io.ReadAll(r.Body)
-				postBody = string(b)
-			}
-			w.WriteHeader(200)
-			_, _ = w.Write([]byte(`{}`))
-		}))
+		changeHandler(&postBody)))
 	defer srv.Close()
 
 	_ = p.SetRecord(context.Background(), "example.com", entree.Record{
@@ -187,14 +253,7 @@ func TestSetRecord_DefaultTTL(t *testing.T) {
 	var postBody string
 	p, srv := newTestProvider(t, zonesHandler(
 		`{"managedZones":[{"name":"zone-1","dnsName":"example.com.","id":"1"}]}`,
-		func(w http.ResponseWriter, r *http.Request) {
-			if r.Method == "POST" {
-				b, _ := io.ReadAll(r.Body)
-				postBody = string(b)
-			}
-			w.WriteHeader(200)
-			_, _ = w.Write([]byte(`{}`))
-		}))
+		changeHandler(&postBody)))
 	defer srv.Close()
 
 	_ = p.SetRecord(context.Background(), "example.com", entree.Record{
