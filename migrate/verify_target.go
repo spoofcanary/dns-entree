@@ -111,3 +111,51 @@ func typeStringToCode(t string) (uint16, bool) {
 	}
 	return 0, false
 }
+
+// VerifyResult is the per-record outcome from a single verification round
+// against a set of nameservers.
+type VerifyResult struct {
+	Record entree.Record
+	Status string // "matched", "not_yet_propagated", "mismatch", "error"
+	Detail string
+}
+
+// VerifyTargetSummary is the aggregate result of one verification round.
+type VerifyTargetSummary struct {
+	Matched int
+	Total   int
+	Results []VerifyResult
+}
+
+// VerifyAgainstNS runs ONE verification round: for each record in records, query
+// each nameserver in nameservers directly (no recursion) and return the
+// per-record status. This is intended for callers that want to drive their own
+// polling loop (e.g., a stateless HTTP poll endpoint), as opposed to Migrate's
+// internal verification loop which polls until matched or timeout.
+//
+// Status values:
+//   - "matched": at least one NS returned the expected record content
+//   - "not_yet_propagated": NS returned no answer for the name (DNS propagation lag)
+//   - "mismatch": NS returned a different value for the name
+//   - "error": all NS lookups failed (network, NXDOMAIN, etc)
+func VerifyAgainstNS(ctx context.Context, nameservers []string, records []entree.Record, timeout time.Duration) VerifyTargetSummary {
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	out := VerifyTargetSummary{Total: len(records), Results: make([]VerifyResult, 0, len(records))}
+	for _, rec := range records {
+		matched, gotAny, detail := verifyRecordAgainstNS(ctx, nameservers, rec, timeout)
+		status := "error"
+		switch {
+		case matched:
+			status = "matched"
+			out.Matched++
+		case gotAny:
+			status = "mismatch"
+		case detail != "":
+			status = "not_yet_propagated"
+		}
+		out.Results = append(out.Results, VerifyResult{Record: rec, Status: status, Detail: detail})
+	}
+	return out
+}
