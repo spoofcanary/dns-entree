@@ -138,7 +138,7 @@ func TestBuildApplyURL_SignatureNotInSignable(t *testing.T) {
 	}
 
 	// Verify sig
-	rawSig, err := base64.RawURLEncoding.DecodeString(sigStr)
+	rawSig, err := base64.StdEncoding.DecodeString(sigStr)
 	if err != nil {
 		t.Fatalf("decode sig: %v", err)
 	}
@@ -177,7 +177,7 @@ func TestBuildApplyURL_SpecialChars(t *testing.T) {
 	q.Del("key")
 	q.Del("sig")
 	recomputed, _, _, _ := SortAndSignParams(q, testKey)
-	rawSig, _ := base64.RawURLEncoding.DecodeString(sigStr)
+	rawSig, _ := base64.StdEncoding.DecodeString(sigStr)
 	h := sha256.Sum256([]byte(recomputed))
 	if err := rsa.VerifyPKCS1v15(&testKey.PublicKey, crypto.SHA256, h[:], rawSig); err != nil {
 		t.Errorf("verify: %v", err)

@@ -49,10 +49,13 @@ func LoadPrivateKey(pemData []byte) (*rsa.PrivateKey, error) {
 // returns the base64url (no padding) encoded signature plus a keyHash.
 //
 // PKCS1v15 is deterministic: the same (key, query) pair always produces the
-// same signature bytes. base64url uses '-' and '_' (URL-safe) so the signature
-// can be appended to a URL without further escaping.
+// same signature bytes. The signature is base64-encoded with the standard
+// alphabet (RFC 4648 §4) and URL-escaped when appended to a query string.
+// This matches what production Cloudflare Domain Connect endpoints accept and
+// is the encoding used by the upstream SendCanary implementation that this
+// package was extracted from.
 //
-// keyHash is base64url(sha256(SubjectPublicKeyInfo DER)) and is informational
+// keyHash is base64(sha256(SubjectPublicKeyInfo DER)) and is informational
 // only — useful for logging and key rotation. It is NOT the value to put in
 // the `key=` URL parameter; that parameter holds the DNS host where the public
 // key TXT record lives (see ApplyURLOpts.KeyHost).
@@ -65,14 +68,14 @@ func SignQueryString(query string, key *rsa.PrivateKey) (sig string, keyHash str
 	if err != nil {
 		return "", "", fmt.Errorf("domainconnect: sign: %w", err)
 	}
-	sig = base64.RawURLEncoding.EncodeToString(raw)
+	sig = base64.StdEncoding.EncodeToString(raw)
 
 	pubDER, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
 	if err != nil {
 		return "", "", fmt.Errorf("domainconnect: marshal public key: %w", err)
 	}
 	pubHash := sha256.Sum256(pubDER)
-	keyHash = base64.RawURLEncoding.EncodeToString(pubHash[:])
+	keyHash = base64.StdEncoding.EncodeToString(pubHash[:])
 	return sig, keyHash, nil
 }
 

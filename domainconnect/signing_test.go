@@ -20,7 +20,7 @@ func TestSignQueryString_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw, err := base64.RawURLEncoding.DecodeString(sig)
+	raw, err := base64.StdEncoding.DecodeString(sig)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -56,10 +56,10 @@ func TestSignQueryString_KeyHashStable(t *testing.T) {
 
 func TestSignQueryString_KeyHashFormat(t *testing.T) {
 	_, kh, _ := SignQueryString("x=y", testKey)
-	if strings.ContainsAny(kh, "+/=") {
-		t.Errorf("keyHash not base64url: %s", kh)
+	if kh == "" {
+		t.Error("keyHash empty")
 	}
-	dec, err := base64.RawURLEncoding.DecodeString(kh)
+	dec, err := base64.StdEncoding.DecodeString(kh)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func TestSortAndSignParams_AlphabeticalOrder(t *testing.T) {
 	if sq != "a=1&b=2&c=3" {
 		t.Errorf("got %s", sq)
 	}
-	raw, _ := base64.RawURLEncoding.DecodeString(sig)
+	raw, _ := base64.StdEncoding.DecodeString(sig)
 	h := sha256.Sum256([]byte(sq))
 	if err := rsa.VerifyPKCS1v15(&testKey.PublicKey, crypto.SHA256, h[:], raw); err != nil {
 		t.Errorf("verify: %v", err)
@@ -108,7 +108,7 @@ func TestSortAndSignParams_SpecialChars(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw, _ := base64.RawURLEncoding.DecodeString(sig)
+	raw, _ := base64.StdEncoding.DecodeString(sig)
 	h := sha256.Sum256([]byte(sq))
 	if err := rsa.VerifyPKCS1v15(&testKey.PublicKey, crypto.SHA256, h[:], raw); err != nil {
 		t.Errorf("verify: %v", err)
@@ -123,7 +123,7 @@ func TestSortAndSignParams_EmptyParams(t *testing.T) {
 	if sq != "" {
 		t.Errorf("expected empty, got %s", sq)
 	}
-	raw, _ := base64.RawURLEncoding.DecodeString(sig)
+	raw, _ := base64.StdEncoding.DecodeString(sig)
 	h := sha256.Sum256(nil)
 	if err := rsa.VerifyPKCS1v15(&testKey.PublicKey, crypto.SHA256, h[:], raw); err != nil {
 		t.Errorf("verify: %v", err)
@@ -142,7 +142,7 @@ func TestSortAndSignParams_KnownVector(t *testing.T) {
 	if sq != "domain=example.com&policy=none" {
 		t.Fatalf("got %s", sq)
 	}
-	raw, err := base64.RawURLEncoding.DecodeString(sig)
+	raw, err := base64.StdEncoding.DecodeString(sig)
 	if err != nil {
 		t.Fatal(err)
 	}
