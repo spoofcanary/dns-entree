@@ -1,0 +1,21 @@
+{
+  "providerId": "test.example",
+  "providerName": "Test Provider",
+  "serviceId": "simple-txt",
+  "serviceName": "Simple TXT",
+  "version": 1,
+  "logoUrl": "https://test.example/logo.png",
+  "description": "Single TXT record with one variable",
+  "variableDescription": "domain: the domain to verify",
+  "syncPubKeyDomain": "test.example",
+  "syncRedirectDomain": "test.example",
+  "records": [
+    {
+      "type": "TXT",
+      "host": "@",
+      "data": "verify=%domain%",
+      "ttl": 3600,
+      "essential": "OnApply"
+    }
+  ]
+}

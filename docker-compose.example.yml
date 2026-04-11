@@ -1,0 +1,22 @@
+services:
+  entree-api:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      ENTREE_API_LISTEN: ":8080"
+      ENTREE_API_LOG_FORMAT: text
+      ENTREE_API_STATE_DIR: /data/migrations
+      ENTREE_API_CORS_ORIGIN: "*"
+      ENTREE_STATE_KEY: "" # Set to output of: openssl rand -hex 32
+    volumes:
+      - entree-state:/data
+    healthcheck:
+      test: ["/entree", "verify", "--help"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  entree-state:

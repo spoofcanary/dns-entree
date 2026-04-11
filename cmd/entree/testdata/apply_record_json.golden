@@ -1,0 +1,1 @@
+{"ok":true,"schema_version":1,"data":{"results":[{"type":"TXT","name":"_dmarc.example.com","status":"created","record_value":"v=DMARC1","verified":false,"verify_error":"post-push verification did not observe record"}]}}

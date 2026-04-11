@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>dns-entree Widget Demo</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      padding: 40px 24px;
+      max-width: 720px;
+      margin: 0 auto;
+      line-height: 1.6;
+      color: #1a1a2e;
+      background: #f7f8fa;
+    }
+    h1 { font-size: 24px; margin-bottom: 4px; }
+    .subtitle { color: #6b7280; font-size: 14px; margin-bottom: 32px; }
+    h2 { font-size: 16px; margin-bottom: 12px; color: #374151; }
+    .demo-section {
+      background: #fff;
+      border: 1px solid #e5e7eb;
+      border-radius: 10px;
+      padding: 24px;
+      margin-bottom: 20px;
+    }
+    .demo-section p {
+      font-size: 13px;
+      color: #6b7280;
+      margin-bottom: 16px;
+    }
+    .config-row {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 16px;
+      flex-wrap: wrap;
+    }
+    input {
+      padding: 7px 10px;
+      font-size: 13px;
+      border: 1px solid #d1d5db;
+      border-radius: 6px;
+      flex: 1;
+      min-width: 180px;
+    }
+    .btn-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    button {
+      padding: 8px 16px;
+      font-size: 13px;
+      font-weight: 500;
+      border: 1px solid #d1d5db;
+      border-radius: 6px;
+      background: #fff;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    button:hover { background: #f3f4f6; }
+    button.primary {
+      background: #2563eb;
+      color: #fff;
+      border-color: #2563eb;
+    }
+    button.primary:hover { background: #1d4ed8; }
+    button.accent {
+      background: #e11d48;
+      color: #fff;
+      border-color: #e11d48;
+    }
+    button.accent:hover { background: #be123c; }
+    .tier-label {
+      display: inline-block;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      padding: 2px 6px;
+      border-radius: 4px;
+      margin-bottom: 8px;
+    }
+    .tier-1 { background: #dbeafe; color: #1e40af; }
+    .tier-2 { background: #fef3c7; color: #92400e; }
+    .tier-3 { background: #d1fae5; color: #065f46; }
+    .log-wrap { margin-top: 24px; }
+    .log-label {
+      font-size: 12px;
+      font-weight: 600;
+      color: #6b7280;
+      margin-bottom: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .log {
+      background: #1a1a2e;
+      color: #a5b4fc;
+      border-radius: 8px;
+      padding: 16px;
+      font-family: "SF Mono", Menlo, Consolas, monospace;
+      font-size: 12px;
+      min-height: 100px;
+      max-height: 240px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+    }
+    @media (prefers-color-scheme: dark) {
+      body { background: #0f0f1a; color: #e5e7eb; }
+      .demo-section { background: #1a1a2e; border-color: #374151; }
+      h2 { color: #d1d5db; }
+      button { background: #1e1e38; border-color: #374151; color: #e5e7eb; }
+      button:hover { background: #2a2a4a; }
+      button.primary { background: #3b82f6; border-color: #3b82f6; color: #fff; }
+      input { background: #1e1e38; border-color: #374151; color: #e5e7eb; }
+    }
+  </style>
+</head>
+<body>
+  <h1>dns-entree Widget Demo</h1>
+  <p class="subtitle">All three tiers: Domain Connect, API credentials, and copy-paste fallback.</p>
+
+  <!-- Config -->
+  <div class="demo-section">
+    <h2>Configuration</h2>
+    <div class="config-row">
+      <input type="text" id="apiUrl" value="http://localhost:8080" placeholder="API URL">
+      <input type="text" id="domain" value="example.com" placeholder="Domain">
+    </div>
+  </div>
+
+  <!-- Tier 1: Domain Connect -->
+  <div class="demo-section">
+    <span class="tier-label tier-1">Tier 1</span>
+    <h2>Domain Connect (auto-detect)</h2>
+    <p>Opens the widget, which calls /v1/detect and /v1/dc/discover. If the domain's DNS host supports Domain Connect, the one-click consent flow is shown. Try with a Cloudflare-hosted domain.</p>
+    <div class="btn-row">
+      <button class="primary" onclick="openWidget()">Open Widget (auto)</button>
+      <button onclick="openWidget({ theme: 'light' })">Light Theme</button>
+      <button onclick="openWidget({ theme: 'dark' })">Dark Theme</button>
+      <button class="accent" onclick="openWidget({ accentColor: '#e11d48' })">Custom Accent</button>
+    </div>
+  </div>
+
+  <!-- Tier 2: Credential flow -->
+  <div class="demo-section">
+    <span class="tier-label tier-2">Tier 2</span>
+    <h2>API Credentials</h2>
+    <p>When Domain Connect is not available but a provider is detected (e.g., Route 53), the widget shows a credential form. The customer pastes their API token, records are pushed, and the widget verifies propagation.</p>
+    <div class="btn-row">
+      <button onclick="openWidget({ records: manyRecords })">Open (5 records)</button>
+      <button onclick="openWidget({ records: [singleRecord] })">Open (1 record)</button>
+    </div>
+  </div>
+
+  <!-- Tier 3: Fallback -->
+  <div class="demo-section">
+    <span class="tier-label tier-3">Tier 3</span>
+    <h2>Copy-Paste Fallback</h2>
+    <p>When the API is unreachable or the provider is unknown, the widget shows each record as a card with copy buttons. No backend calls needed -- records come from your array. Try with a bad API URL.</p>
+    <div class="btn-row">
+      <button onclick="openWidget({ apiUrl: 'http://localhost:1' })">Open (API unreachable)</button>
+      <button onclick="openWidget({ apiUrl: 'http://localhost:1', records: manyRecords })">Fallback (5 records)</button>
+    </div>
+  </div>
+
+  <!-- DC Return -->
+  <div class="demo-section">
+    <h2>Domain Connect Return</h2>
+    <p>After a DC redirect, the widget auto-opens in verify mode. Simulate this by saving state and reloading with de_state param.</p>
+    <div class="btn-row">
+      <button onclick="simulateDCReturn()">Simulate DC Return</button>
+      <button onclick="checkDCReturn()">Check for DC Return</button>
+    </div>
+  </div>
+
+  <!-- Log -->
+  <div class="log-wrap">
+    <div class="log-label">Event Log</div>
+    <div class="log" id="log"></div>
+  </div>
+
+  <script src="../../widget/dist/widget.js"></script>
+  <script>
+    var singleRecord = { type: "TXT", name: "_dmarc.example.com", content: "v=DMARC1; p=reject; rua=mailto:dmarc@example.com" };
+
+    var baseRecords = [
+      { type: "TXT", name: "example.com", content: "v=spf1 include:_spf.sendcanary.com ~all" },
+      { type: "CNAME", name: "sc._domainkey.example.com", content: "sc._domainkey.sendcanary.com" },
+      { type: "TXT", name: "_dmarc.example.com", content: "v=DMARC1; p=reject; rua=mailto:dmarc@sendcanary.com" },
+    ];
+
+    var manyRecords = baseRecords.concat([
+      { type: "MX", name: "example.com", content: "10 mx1.sendcanary.com" },
+      { type: "CNAME", name: "em.example.com", content: "u12345.wl.sendgrid.net" },
+    ]);
+
+    function log(msg) {
+      var el = document.getElementById("log");
+      var ts = new Date().toLocaleTimeString();
+      el.textContent += "[" + ts + "] " + msg + "\n";
+      el.scrollTop = el.scrollHeight;
+    }
+
+    var callbacks = {
+      onComplete: function(results) {
+        log("onComplete: " + results.map(function(r) { return r.record.type + "=" + r.status; }).join(", "));
+      },
+      onError: function(err) {
+        log("onError: " + err.message);
+      },
+      onClose: function() {
+        log("onClose");
+      },
+    };
+
+    function getApiUrl() { return document.getElementById("apiUrl").value || "http://localhost:8080"; }
+    function getDomain() { return document.getElementById("domain").value || "example.com"; }
+
+    function openWidget(overrides) {
+      overrides = overrides || {};
+      var opts = {
+        domain: getDomain(),
+        records: overrides.records || baseRecords,
+        apiUrl: overrides.apiUrl || getApiUrl(),
+        onComplete: callbacks.onComplete,
+        onError: callbacks.onError,
+        onClose: callbacks.onClose,
+      };
+      if (overrides.theme) opts.theme = overrides.theme;
+      if (overrides.accentColor) opts.accentColor = overrides.accentColor;
+      log("Opening widget - domain: " + opts.domain + ", records: " + opts.records.length);
+      DnsEntree.open(opts);
+    }
+
+    function simulateDCReturn() {
+      var domain = getDomain();
+      log("Simulating DC return for " + domain);
+      var state = {
+        domain: domain,
+        records: baseRecords,
+        dcDiscovery: {
+          Supported: true, ProviderID: "cloudflare", ProviderName: "Cloudflare",
+          URLAsyncUX: "https://dash.cloudflare.com/cdn-cgi/access/domain-connect",
+          URLSyncUX: "", URLAPI: "", Width: 0, Height: 0, Nameservers: [],
+        },
+        providerLabel: "Cloudflare",
+        timestamp: Date.now(),
+      };
+      sessionStorage.setItem("de_state_" + domain, JSON.stringify(state));
+      var url = new URL(window.location.href);
+      url.searchParams.set("de_state", domain);
+      window.location.href = url.toString();
+    }
+
+    function checkDCReturn() {
+      var handled = DnsEntree.handleDCReturn({
+        apiUrl: getApiUrl(),
+        onComplete: callbacks.onComplete,
+        onError: callbacks.onError,
+        onClose: callbacks.onClose,
+      });
+      log(handled ? "DC return detected - widget opened in verify mode" : "No DC return detected");
+    }
+
+    // Auto-check for DC return on load
+    var dcHandled = DnsEntree.handleDCReturn({
+      apiUrl: getApiUrl(),
+      onComplete: callbacks.onComplete,
+      onError: callbacks.onError,
+      onClose: callbacks.onClose,
+    });
+    if (dcHandled) {
+      log("DC return detected on load - auto-opened");
+    } else {
+      log("Widget loaded. Click a button to test.");
+    }
+  </script>
+</body>
+</html>

@@ -1,0 +1,21 @@
+{
+  "$schema": "https://railway.com/railway.schema.json",
+  "build": {
+    "dockerfilePath": "Dockerfile"
+  },
+  "deploy": {
+    "startCommand": "/entree-api --listen :8080",
+    "healthcheckPath": "/healthz",
+    "healthcheckTimeout": 5,
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 3
+  },
+  "environments": {
+    "production": {
+      "ENTREE_API_LISTEN": ":8080",
+      "ENTREE_API_LOG_FORMAT": "json",
+      "ENTREE_API_STATE_DIR": "/data/migrations",
+      "ENTREE_STATE_KEY": ""
+    }
+  }
+}

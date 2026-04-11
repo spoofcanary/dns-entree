@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>dns-entree widget test</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      padding: 40px;
+      max-width: 640px;
+      margin: 0 auto;
+      line-height: 1.6;
+      color: #1a1a2e;
+      background: #f7f8fa;
+    }
+    h1 { font-size: 22px; margin-bottom: 8px; }
+    p { color: #6b7280; font-size: 14px; margin-bottom: 24px; }
+    .section { margin-bottom: 24px; }
+    .section-label { font-size: 12px; font-weight: 600; color: #6b7280; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.05em; }
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    button {
+      padding: 8px 16px;
+      font-size: 13px;
+      font-weight: 500;
+      border: 1px solid #d1d5db;
+      border-radius: 6px;
+      background: #fff;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    button:hover { background: #f3f4f6; }
+    button.primary {
+      background: #2563eb;
+      color: #fff;
+      border-color: #2563eb;
+    }
+    button.primary:hover { background: #1d4ed8; }
+    .log {
+      background: #1a1a2e;
+      color: #a5b4fc;
+      border-radius: 8px;
+      padding: 16px;
+      font-family: "SF Mono", Menlo, Consolas, monospace;
+      font-size: 12px;
+      min-height: 120px;
+      max-height: 300px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+    }
+    .log-label { font-size: 12px; font-weight: 600; color: #6b7280; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.05em; }
+    input {
+      padding: 6px 10px;
+      font-size: 13px;
+      border: 1px solid #d1d5db;
+      border-radius: 6px;
+      width: 280px;
+    }
+    @media (prefers-color-scheme: dark) {
+      body { background: #0f0f1a; color: #e5e7eb; }
+      button { background: #1e1e38; border-color: #374151; color: #e5e7eb; }
+      button:hover { background: #2a2a4a; }
+      button.primary { background: #3b82f6; border-color: #3b82f6; color: #fff; }
+      button.primary:hover { background: #60a5fa; }
+      input { background: #1e1e38; border-color: #374151; color: #e5e7eb; }
+    }
+  </style>
+</head>
+<body>
+  <h1>dns-entree widget</h1>
+  <p>Test the embeddable DNS setup widget. Exercises detection, DC flow, verification polling, and DC return handling.</p>
+
+  <div class="section">
+    <div class="section-label">API Configuration</div>
+    <div class="controls">
+      <input type="text" id="apiUrl" value="http://localhost:8080" placeholder="API URL">
+      <input type="text" id="domain" value="example.com" placeholder="Domain">
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-label">Basic Tests</div>
+    <div class="controls">
+      <button class="primary" onclick="openDefault()">Open (auto theme)</button>
+      <button onclick="openLight()">Open (light)</button>
+      <button onclick="openDark()">Open (dark)</button>
+      <button onclick="openAccent()">Open (custom accent)</button>
+      <button onclick="openSingle()">Open (1 record)</button>
+      <button onclick="openMany()">Open (5 records)</button>
+      <button onclick="closeWidget()">Close</button>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-label">DC Return Test</div>
+    <div class="controls">
+      <button onclick="simulateDCReturn()">Simulate DC return</button>
+      <button onclick="checkReturn()">Check for DC return</button>
+    </div>
+  </div>
+
+  <div class="log-label">Event Log</div>
+  <div class="log" id="log"></div>
+
+  <script src="dist/widget.js"></script>
+  <script>
+    function log(msg) {
+      var el = document.getElementById("log");
+      var ts = new Date().toLocaleTimeString();
+      el.textContent += "[" + ts + "] " + msg + "\n";
+      el.scrollTop = el.scrollHeight;
+    }
+
+    var baseRecords = [
+      { type: "TXT", name: "example.com", content: "v=spf1 include:_spf.sendcanary.com ~all" },
+      { type: "CNAME", name: "sc._domainkey.example.com", content: "sc._domainkey.sendcanary.com" },
+      { type: "TXT", name: "_dmarc.example.com", content: "v=DMARC1; p=reject; rua=mailto:dmarc@sendcanary.com" },
+    ];
+
+    var callbacks = {
+      onComplete: function(results) {
+        log("onComplete: " + results.map(function(r) { return r.record.type + "=" + r.status; }).join(", "));
+      },
+      onError: function(err) {
+        log("onError: " + err.message);
+      },
+      onClose: function() {
+        log("onClose");
+      },
+    };
+
+    function getApiUrl() {
+      return document.getElementById("apiUrl").value || "http://localhost:8080";
+    }
+
+    function getDomain() {
+      return document.getElementById("domain").value || "example.com";
+    }
+
+    function openDefault() {
+      log("Opening (auto theme) - domain: " + getDomain());
+      DnsEntree.open(Object.assign({
+        domain: getDomain(),
+        records: baseRecords,
+        apiUrl: getApiUrl(),
+      }, callbacks));
+    }
+
+    function openLight() {
+      log("Opening (light)");
+      DnsEntree.open(Object.assign({
+        domain: getDomain(),
+        records: baseRecords,
+        apiUrl: getApiUrl(),
+        theme: "light",
+      }, callbacks));
+    }
+
+    function openDark() {
+      log("Opening (dark)");
+      DnsEntree.open(Object.assign({
+        domain: getDomain(),
+        records: baseRecords,
+        apiUrl: getApiUrl(),
+        theme: "dark",
+      }, callbacks));
+    }
+
+    function openAccent() {
+      log("Opening (accent: #e11d48)");
+      DnsEntree.open(Object.assign({
+        domain: getDomain(),
+        records: baseRecords,
+        apiUrl: getApiUrl(),
+        accentColor: "#e11d48",
+      }, callbacks));
+    }
+
+    function openSingle() {
+      log("Opening (1 record)");
+      DnsEntree.open(Object.assign({
+        domain: getDomain(),
+        records: [baseRecords[0]],
+        apiUrl: getApiUrl(),
+      }, callbacks));
+    }
+
+    function openMany() {
+      log("Opening (5 records)");
+      DnsEntree.open(Object.assign({
+        domain: getDomain(),
+        records: [
+          { type: "TXT", name: "example.com", content: "v=spf1 include:_spf.sendcanary.com ~all" },
+          { type: "CNAME", name: "sc._domainkey.example.com", content: "sc._domainkey.sendcanary.com" },
+          { type: "TXT", name: "_dmarc.example.com", content: "v=DMARC1; p=reject; rua=mailto:dmarc@sendcanary.com" },
+          { type: "MX", name: "example.com", content: "10 mx1.sendcanary.com" },
+          { type: "CNAME", name: "em.example.com", content: "u12345.wl.sendgrid.net" },
+        ],
+        apiUrl: getApiUrl(),
+      }, callbacks));
+    }
+
+    function closeWidget() {
+      log("Closing");
+      DnsEntree.close();
+    }
+
+    // DC return simulation: saves state to sessionStorage, then adds de_state param
+    function simulateDCReturn() {
+      var domain = getDomain();
+      log("Simulating DC return for " + domain);
+
+      // Save fake DC state to sessionStorage
+      var state = {
+        domain: domain,
+        records: baseRecords,
+        dcDiscovery: {
+          Supported: true,
+          ProviderID: "cloudflare",
+          ProviderName: "Cloudflare",
+          URLAsyncUX: "https://dash.cloudflare.com/cdn-cgi/access/domain-connect",
+          URLSyncUX: "",
+          URLAPI: "",
+          Width: 0,
+          Height: 0,
+          Nameservers: [],
+        },
+        providerLabel: "Cloudflare",
+        timestamp: Date.now(),
+      };
+      sessionStorage.setItem("de_state_" + domain, JSON.stringify(state));
+
+      // Add de_state to URL and reload
+      var url = new URL(window.location.href);
+      url.searchParams.set("de_state", domain);
+      window.location.href = url.toString();
+    }
+
+    function checkReturn() {
+      var handled = DnsEntree.handleDCReturn(Object.assign({
+        apiUrl: getApiUrl(),
+      }, callbacks));
+      if (handled) {
+        log("DC return detected - widget opened in verify mode");
+      } else {
+        log("No DC return detected");
+      }
+    }
+
+    // On page load, check for DC return
+    var dcHandled = DnsEntree.handleDCReturn(Object.assign({
+      apiUrl: getApiUrl(),
+    }, callbacks));
+    if (dcHandled) {
+      log("DC return detected on load - widget auto-opened in verify mode");
+    } else {
+      log("Widget loaded. Click a button to test.");
+    }
+  </script>
+</body>
+</html>

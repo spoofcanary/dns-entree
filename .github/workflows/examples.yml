@@ -1,0 +1,50 @@
+name: examples
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  examples:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        example:
+          - push-dmarc
+          - push-dkim
+          - detect-and-apply-template
+          - spf-merge
+          - dc-discover
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+      - name: Build example
+        env:
+          EXAMPLE: ${{ matrix.example }}
+        run: |
+          cd "_examples/${EXAMPLE}"
+          go build ./...
+
+  main-module:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+      - name: go vet
+        run: go vet ./...
+      - name: gofmt
+        run: |
+          diff=$(gofmt -l .)
+          if [ -n "$diff" ]; then
+            echo "gofmt diffs:"
+            echo "$diff"
+            exit 1
+          fi
+      - name: go test
+        run: go test ./...

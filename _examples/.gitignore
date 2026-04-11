@@ -1,0 +1,5 @@
+push-dmarc/push-dmarc
+push-dkim/push-dkim
+detect-and-apply-template/detect-and-apply-template
+spf-merge/spf-merge
+dc-discover/dc-discover

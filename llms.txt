@@ -1,0 +1,62 @@
+# dns-entree
+
+> Go library, CLI, HTTP API, and embeddable JS widget for DNS provider operations: idempotent record push with post-push verification, SPF merge, provider detection, Domain Connect v2 discovery/signing/template apply, zone migration, and drop-in DNS setup widget with three auto-selected tiers.
+
+## Docs
+
+- [README](README.md): project overview, quickstart, feature list
+- [AGENTS.md](AGENTS.md): machine-readable feature surface, library entry points, CLI JSON schemas, exit codes, env vars
+- [SPEC.md](SPEC.md): functional and non-functional requirements
+
+## Guides
+
+- [Getting Started](docs/getting-started.md): library install and first push
+- [CLI Reference](docs/cli.md): generated cobra command reference
+- [Stability Tiers](docs/stability.md): per-package API stability guarantees
+- [Push Service](docs/guides/push-service.md): idempotent push and verify semantics
+- [SPF Merge](docs/guides/spf-merge.md): merge rules and the 10-lookup limit
+- [Domain Connect](docs/guides/domain-connect.md): discovery, signing, apply URLs
+- [Templates](docs/guides/templates.md): load, resolve, apply Domain Connect templates
+- [Provider Detection](docs/guides/provider-detection.md): NS patterns and RDAP fallback
+- [Widget](docs/guides/widget.md): embeddable JS widget integration guide
+- [HTTP API](docs/http-api.md): stateless HTTP server, OpenAPI spec, stateful migration workflow
+
+## Providers
+
+- [Cloudflare](docs/providers/cloudflare.md): credential setup, required token scopes
+- [Route 53](docs/providers/route53.md): IAM policy, region configuration
+- [GoDaddy](docs/providers/godaddy.md): API key creation, production access caveats
+- [Google Cloud DNS](docs/providers/gcdns.md): service account permissions
+
+## Examples
+
+- [push-dmarc](_examples/push-dmarc/): push a DMARC TXT record via Cloudflare
+- [push-dkim](_examples/push-dkim/): push a DKIM CNAME via Route 53
+- [detect-and-apply-template](_examples/detect-and-apply-template/): detect provider and apply a DC template
+- [spf-merge](_examples/spf-merge/): library equivalent of `entree spf-merge`
+- [dc-discover](_examples/dc-discover/): Domain Connect v2 discovery
+
+## Capabilities
+
+- **Library**: Go module at `github.com/spoofcanary/dns-entree` - PushService, DetectProvider, Verify, MergeSPF, Domain Connect discovery/signing/apply, template engine
+- **CLI**: `entree` binary - detect, apply, verify, spf-merge, dc-discover, templates, migrate, zone, serve
+- **HTTP API**: `entree-api` binary - stateless per-request credentials, OpenAPI 3.1, Prometheus metrics, stateful migration workflow with AES-256-GCM encryption
+- **Widget**: `@dns-entree/widget` npm package - embeddable JS widget with Domain Connect, API credentials, and copy-paste tiers; shadow DOM; light/dark theming; under 20 KB gzipped
+- **Docker**: multi-stage Dockerfile, distroless runtime, published to GHCR
+- **Deploy**: one-click configs for Railway, Render, Fly.io
+
+## Packages
+
+| Package | Stability | Description |
+|---------|-----------|-------------|
+| `entree` (root) | stable | PushService, SPF merge, verify, detect, apply |
+| `domainconnect/` | stable | Domain Connect discovery, signing, apply URLs |
+| `template/` | stable | Template engine: load, resolve, apply |
+| `providers/cloudflare` | stable | Cloudflare provider |
+| `providers/route53` | stable | AWS Route53 provider |
+| `providers/godaddy` | stable | GoDaddy provider |
+| `providers/gcdns` | stable | Google Cloud DNS provider |
+| `cmd/entree/` | stable | CLI command surface and flags |
+| `cmd/entree-api/` | stable | HTTP API server |
+| `widget/` | unstable | Embeddable JS widget (stabilizes at v1.0) |
+| `internal/...` | unstable | Internal packages |

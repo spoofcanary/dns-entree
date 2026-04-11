@@ -1,0 +1,1001 @@
+openapi: 3.1.0
+info:
+  title: dns-entree HTTP API
+  version: 0.1.0-alpha
+  summary: Stateless HTTP facade over the dns-entree library.
+  description: |
+    dns-entree is a provider-agnostic DNS automation library. This HTTP API
+    is a thin, stateless wrapper that exposes the same operations as the
+    `entree` CLI so callers in any language can use it via plain JSON.
+
+    Deployment model: run behind a reverse proxy (Caddy, nginx, Traefik,
+    Cloudflare Access, Tailscale, etc.) that handles TLS termination and
+    authentication. The server itself is HTTP-only and unauthenticated.
+    See docs/http-api.md for details.
+
+    Credentials are passed per-request via X-Entree-* headers. The server
+    holds nothing between requests. Two endpoints accept credentials in the
+    JSON body instead of headers because they touch two providers at once
+    (POST /v1/migrate, POST /v1/zone/import) or carry an RSA private key
+    that must not appear in proxy access logs (POST /v1/dc/apply-url).
+
+    Every successful response uses the envelope:
+        { "ok": true, "schema_version": 1, "data": <payload> }
+    Every error response uses:
+        { "ok": false, "schema_version": 1, "error": { "code": "...", "message": "...", "details": {...} } }
+
+servers:
+  - url: http://localhost:8080
+    description: Local server (default bind address)
+
+tags:
+  - name: detection
+    description: Provider detection and verification
+  - name: records
+    description: Record push, SPF merge, template apply
+  - name: domain-connect
+    description: Domain Connect discovery and apply-URL generation
+  - name: templates
+    description: Template registry sync, list, get, resolve
+  - name: migration
+    description: Cross-provider migration and zone import/export
+  - name: ops
+    description: Health, readiness, metrics, OpenAPI
+
+components:
+  securitySchemes:
+    cloudflareToken:
+      type: apiKey
+      in: header
+      name: X-Entree-Cloudflare-Token
+      description: Cloudflare API token (zone-scoped). Used when X-Entree-Provider is `cloudflare`.
+    awsAccessKeyId:
+      type: apiKey
+      in: header
+      name: X-Entree-AWS-Access-Key-Id
+      description: AWS access key id. Used with `route53` provider; pair with X-Entree-AWS-Secret-Access-Key.
+    awsSecretAccessKey:
+      type: apiKey
+      in: header
+      name: X-Entree-AWS-Secret-Access-Key
+      description: AWS secret access key. Used with `route53` provider.
+    godaddyKey:
+      type: apiKey
+      in: header
+      name: X-Entree-GoDaddy-Key
+      description: GoDaddy API key. Used with `godaddy` provider; pair with X-Entree-GoDaddy-Secret.
+    godaddySecret:
+      type: apiKey
+      in: header
+      name: X-Entree-GoDaddy-Secret
+      description: GoDaddy API secret.
+    gcdnsServiceAccount:
+      type: apiKey
+      in: header
+      name: X-Entree-GCDNS-Service-Account-JSON
+      description: Base64-encoded Google Cloud DNS service account JSON. Used with `google_cloud_dns` provider.
+    providerSlug:
+      type: apiKey
+      in: header
+      name: X-Entree-Provider
+      description: Provider slug (`cloudflare`, `route53`, `godaddy`, `google_cloud_dns`). Required on endpoints that need a provider when more than one credential set is configured.
+    bearerAccessToken:
+      type: http
+      scheme: bearer
+      description: Per-migration capability token issued by POST /v1/migrate/preview. Required on all /v1/migrate/{id}/* routes.
+
+  parameters:
+    ProviderHeader:
+      in: header
+      name: X-Entree-Provider
+      schema: { type: string, enum: [cloudflare, route53, godaddy, google_cloud_dns] }
+      required: false
+      description: Provider slug. Required when the request needs a provider and headers contain credentials for more than one.
+
+  schemas:
+    Envelope:
+      type: object
+      required: [ok, schema_version]
+      properties:
+        ok: { type: boolean }
+        schema_version: { type: integer, enum: [1] }
+        data:
+          description: Payload (success only). Shape varies per endpoint.
+        error:
+          $ref: '#/components/schemas/ErrorBody'
+
+    ErrorBody:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum:
+            - MISSING_CREDENTIALS
+            - BAD_REQUEST
+            - PROVIDER_ERROR
+            - VERIFY_MISMATCH
+            - TEMPLATE_NOT_FOUND
+            - RATE_LIMIT_EXCEEDED
+            - INTERNAL
+        message: { type: string }
+        details:
+          type: object
+          additionalProperties: true
+
+    DetectionResult:
+      type: object
+      properties:
+        provider:    { type: string }
+        label:       { type: string }
+        supported:   { type: boolean }
+        nameservers: { type: array, items: { type: string } }
+        method:      { type: string }
+
+    VerifyRequest:
+      type: object
+      required: [domain, type, name]
+      properties:
+        domain:   { type: string }
+        type:     { type: string, enum: [TXT, CNAME, A, AAAA, MX, NS, SRV] }
+        name:     { type: string }
+        contains: { type: string, description: "Substring expected in the record value." }
+
+    VerifyResult:
+      type: object
+      properties:
+        verified:            { type: boolean }
+        current_value:       { type: string }
+        method:              { type: string }
+        nameservers_queried: { type: array, items: { type: string } }
+
+    SPFMergeRequest:
+      type: object
+      required: [current, includes]
+      properties:
+        current:  { type: string }
+        includes: { type: array, items: { type: string } }
+
+    MergeResult:
+      type: object
+      properties:
+        value:                  { type: string }
+        changed:                { type: boolean }
+        broken_input:           { type: boolean }
+        unsupported_mechanisms: { type: array, items: { type: string } }
+
+    Record:
+      type: object
+      required: [type, name, content]
+      properties:
+        type:    { type: string }
+        name:    { type: string }
+        content: { type: string }
+        ttl:     { type: integer }
+        prio:    { type: integer }
+
+    ApplyRequest:
+      type: object
+      required: [domain, records]
+      properties:
+        domain:  { type: string }
+        records: { type: array, items: { $ref: '#/components/schemas/Record' } }
+        dry_run: { type: boolean }
+
+    ApplyReportEntry:
+      type: object
+      properties:
+        type:    { type: string }
+        name:    { type: string }
+        status:  { type: string, enum: [created, updated, already_configured, skipped, failed] }
+        error:   { type: string }
+
+    ApplyReport:
+      type: object
+      properties:
+        domain:  { type: string }
+        dry_run: { type: boolean }
+        results: { type: array, items: { $ref: '#/components/schemas/ApplyReportEntry' } }
+
+    ApplyTemplateRequest:
+      type: object
+      required: [domain, provider_id, service_id]
+      properties:
+        domain:      { type: string }
+        provider_id: { type: string }
+        service_id:  { type: string }
+        vars:
+          type: object
+          additionalProperties: { type: string }
+        dry_run:     { type: boolean }
+
+    DiscoveryResult:
+      type: object
+      properties:
+        domain:                  { type: string }
+        provider_id:             { type: string }
+        provider_display_name:   { type: string }
+        url_sync_uX:             { type: string }
+        url_async_uX:            { type: string }
+        supports_signed_records: { type: boolean }
+
+    ApplyURLOpts:
+      type: object
+      required: [provider_id, service_id, domain]
+      properties:
+        provider_id:     { type: string }
+        service_id:      { type: string }
+        domain:          { type: string }
+        host:            { type: string }
+        params:
+          type: object
+          additionalProperties: { type: string }
+        private_key_pem: { type: string, description: "RSA private key for signed apply URLs (D-05 exception, body-only)." }
+        sig:             { type: boolean }
+
+    ApplyURLResponse:
+      type: object
+      properties:
+        url: { type: string }
+
+    TemplateSummary:
+      type: object
+      properties:
+        provider_id: { type: string }
+        service_id:  { type: string }
+        name:        { type: string }
+        version:     { type: string }
+        description: { type: string }
+
+    Template:
+      type: object
+      properties:
+        provider_id: { type: string }
+        service_id:  { type: string }
+        name:        { type: string }
+        version:     { type: string }
+        records:     { type: array, items: { type: object, additionalProperties: true } }
+        variables:   { type: array, items: { type: object, additionalProperties: true } }
+
+    ResolvedRecord:
+      type: object
+      properties:
+        type:    { type: string }
+        host:    { type: string }
+        data:    { type: string }
+        ttl:     { type: integer }
+        prio:    { type: integer }
+
+    SyncResult:
+      type: object
+      properties:
+        synced_at:    { type: string, format: date-time }
+        templates:    { type: integer }
+        cache_dir:    { type: string }
+
+    Credentials:
+      type: object
+      description: Per-provider credential payload. Mutually exclusive sub-objects keyed by provider slug.
+      additionalProperties: true
+
+    MigrateRequest:
+      type: object
+      required: [domain, source_provider, target_provider]
+      properties:
+        domain:             { type: string }
+        source_provider:    { type: string }
+        target_provider:    { type: string }
+        source_credentials: { $ref: '#/components/schemas/Credentials' }
+        target_credentials: { $ref: '#/components/schemas/Credentials' }
+        labels:             { type: array, items: { type: string } }
+        dry_run:            { type: boolean }
+
+    MigrationReport:
+      type: object
+      properties:
+        domain:        { type: string }
+        dry_run:       { type: boolean }
+        records_total: { type: integer }
+        records_ok:    { type: integer }
+        records_fail:  { type: integer }
+        errors:        { type: array, items: { type: string } }
+
+    Zone:
+      type: object
+      properties:
+        domain:  { type: string }
+        records: { type: array, items: { $ref: '#/components/schemas/Record' } }
+
+    ZoneExportRequest:
+      type: object
+      required: [domain]
+      properties:
+        domain:  { type: string }
+        labels:  { type: array, items: { type: string } }
+        no_axfr: { type: boolean }
+
+    MigratePreviewRequest:
+      type: object
+      required: [domain, target, target_credentials]
+      properties:
+        domain:             { type: string }
+        target:             { type: string }
+        tenant_id:          { type: string }
+        target_credentials: { $ref: '#/components/schemas/Credentials' }
+        source_nameservers: { type: array, items: { type: string } }
+        labels:             { type: array, items: { type: string } }
+        labels_only:        { type: array, items: { type: string } }
+        no_axfr:            { type: boolean }
+
+    MigratePreviewResponse:
+      type: object
+      properties:
+        id:              { type: string, description: UUIDv7 }
+        access_token:    { type: string, description: Bearer token for subsequent calls }
+        status:          { type: string, enum: [preview] }
+        domain:          { type: string }
+        target:          { type: string }
+        detected_source: { type: string }
+        preview:         { $ref: '#/components/schemas/Zone' }
+        expires_at:      { type: string, format: date-time }
+
+    StoredMigration:
+      type: object
+      description: Persisted migration row. `credential_blob` and `access_token` are always redacted on the wire.
+      properties:
+        id:                     { type: string }
+        tenant_id:              { type: string }
+        status:                 { type: string, enum: [preview, applying, awaiting_ns_change, verifying, complete, failed, expired] }
+        domain:                 { type: string }
+        source_slug:            { type: string }
+        target_slug:            { type: string }
+        preview:                { $ref: '#/components/schemas/Zone' }
+        target_zone_id:         { type: string }
+        target_nameservers:     { type: array, items: { type: string } }
+        ns_change_instructions: { type: string }
+        error_message:          { type: string }
+        expires_at:             { type: string, format: date-time }
+        version:                { type: integer }
+        created_at:             { type: string, format: date-time }
+        updated_at:             { type: string, format: date-time }
+        credential_blob:        { type: string, description: "Always null on the wire (redacted)." }
+        access_token:           { type: string, description: "Always empty on the wire (redacted)." }
+
+    ZoneImportRequest:
+      type: object
+      required: [zone, to]
+      properties:
+        zone:               { $ref: '#/components/schemas/Zone' }
+        to:                 { type: string, description: "Target provider slug." }
+        target_credentials: { $ref: '#/components/schemas/Credentials' }
+        dry_run:            { type: boolean }
+
+  responses:
+    Error400:
+      description: Client error (bad request, missing credentials).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Envelope' }
+    Error404:
+      description: Not found (template, domain).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Envelope' }
+    Error409:
+      description: Conflict (verify mismatch).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Envelope' }
+    Error500:
+      description: Internal or provider failure.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Envelope' }
+
+paths:
+
+  /healthz:
+    get:
+      tags: [ops]
+      operationId: getHealthz
+      summary: Liveness probe
+      responses:
+        "200":
+          description: process is up
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Envelope' }
+
+  /readyz:
+    get:
+      tags: [ops]
+      operationId: getReadyz
+      summary: Readiness probe
+      responses:
+        "200":
+          description: ready
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Envelope' }
+        "503":
+          description: not ready
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Envelope' }
+
+  /metrics:
+    get:
+      tags: [ops]
+      operationId: getMetrics
+      summary: Prometheus text exposition
+      description: |
+        Returns the three metric families: entree_http_requests_total,
+        entree_http_request_duration_seconds_bucket, and
+        entree_provider_operations_total.
+      responses:
+        "200":
+          description: metrics
+          content:
+            text/plain:
+              schema: { type: string }
+
+  /v1/openapi.yaml:
+    get:
+      tags: [ops]
+      operationId: getOpenAPI
+      summary: Serve this OpenAPI document
+      responses:
+        "200":
+          description: openapi 3.1 yaml
+          content:
+            application/yaml:
+              schema: { type: string }
+
+  /v1/detect:
+    post:
+      tags: [detection]
+      operationId: postDetect
+      summary: Detect the authoritative DNS provider for a domain
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [domain]
+              properties:
+                domain: { type: string }
+      responses:
+        "200":
+          description: detection result
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/DetectionResult' }
+        "400": { $ref: '#/components/responses/Error400' }
+        "500": { $ref: '#/components/responses/Error500' }
+
+  /v1/verify:
+    post:
+      tags: [detection]
+      operationId: postVerify
+      summary: Verify a DNS record exists with expected content
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VerifyRequest' }
+      responses:
+        "200":
+          description: verify result
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/VerifyResult' }
+        "400": { $ref: '#/components/responses/Error400' }
+        "409": { $ref: '#/components/responses/Error409' }
+        "500": { $ref: '#/components/responses/Error500' }
+
+  /v1/spf-merge:
+    post:
+      tags: [records]
+      operationId: postSPFMerge
+      summary: Merge an existing SPF record with new include mechanisms
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SPFMergeRequest' }
+      responses:
+        "200":
+          description: merge result
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/MergeResult' }
+        "400": { $ref: '#/components/responses/Error400' }
+
+  /v1/apply:
+    post:
+      tags: [records]
+      operationId: postApply
+      summary: Push records to the configured provider
+      security:
+        - cloudflareToken: []
+        - awsAccessKeyId: []
+          awsSecretAccessKey: []
+        - godaddyKey: []
+          godaddySecret: []
+        - gcdnsServiceAccount: []
+      parameters:
+        - $ref: '#/components/parameters/ProviderHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApplyRequest' }
+      responses:
+        "200":
+          description: apply report
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/ApplyReport' }
+        "400": { $ref: '#/components/responses/Error400' }
+        "500": { $ref: '#/components/responses/Error500' }
+
+  /v1/apply/template:
+    post:
+      tags: [records]
+      operationId: postApplyTemplate
+      summary: Resolve a template and push the resulting records
+      security:
+        - cloudflareToken: []
+        - awsAccessKeyId: []
+          awsSecretAccessKey: []
+        - godaddyKey: []
+          godaddySecret: []
+        - gcdnsServiceAccount: []
+      parameters:
+        - $ref: '#/components/parameters/ProviderHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ApplyTemplateRequest' }
+      responses:
+        "200":
+          description: apply report
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/ApplyReport' }
+        "400": { $ref: '#/components/responses/Error400' }
+        "404": { $ref: '#/components/responses/Error404' }
+        "500": { $ref: '#/components/responses/Error500' }
+
+  /v1/dc/discover:
+    post:
+      tags: [domain-connect]
+      operationId: postDCDiscover
+      summary: Domain Connect discovery for a domain
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [domain]
+              properties:
+                domain: { type: string }
+      responses:
+        "200":
+          description: discovery result
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/DiscoveryResult' }
+        "400": { $ref: '#/components/responses/Error400' }
+        "404": { $ref: '#/components/responses/Error404' }
+
+  /v1/dc/apply-url:
+    post:
+      tags: [domain-connect]
+      operationId: postDCApplyURL
+      summary: Build a Domain Connect apply URL (sync uX flow)
+      description: |
+        Accepts an RSA private key inside the request body
+        (`opts.private_key_pem`) when generating signed apply URLs. Body
+        credentials are not logged by the slog middleware.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [opts]
+              properties:
+                opts: { $ref: '#/components/schemas/ApplyURLOpts' }
+      responses:
+        "200":
+          description: apply url
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/ApplyURLResponse' }
+        "400": { $ref: '#/components/responses/Error400' }
+
+  /v1/templates/sync:
+    post:
+      tags: [templates]
+      operationId: postTemplatesSync
+      summary: Refresh the template cache from the remote registry
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "200":
+          description: sync result
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/SyncResult' }
+        "500": { $ref: '#/components/responses/Error500' }
+
+  /v1/templates:
+    get:
+      tags: [templates]
+      operationId: getTemplates
+      summary: List all known Domain Connect templates
+      responses:
+        "200":
+          description: list of template summaries
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/TemplateSummary' }
+
+  /v1/templates/{provider}/{service}:
+    get:
+      tags: [templates]
+      operationId: getTemplate
+      summary: Fetch a single template by provider+service id
+      parameters:
+        - in: path
+          name: provider
+          required: true
+          schema: { type: string }
+        - in: path
+          name: service
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: template
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Template' }
+        "404": { $ref: '#/components/responses/Error404' }
+
+  /v1/templates/{provider}/{service}/resolve:
+    post:
+      tags: [templates]
+      operationId: postTemplateResolve
+      summary: Resolve a template's variables and return the record set
+      parameters:
+        - in: path
+          name: provider
+          required: true
+          schema: { type: string }
+        - in: path
+          name: service
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                vars:
+                  type: object
+                  additionalProperties: { type: string }
+      responses:
+        "200":
+          description: resolved records
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/ResolvedRecord' }
+        "400": { $ref: '#/components/responses/Error400' }
+        "404": { $ref: '#/components/responses/Error404' }
+
+  /v1/migrate:
+    post:
+      tags: [migration]
+      operationId: postMigrate
+      deprecated: true
+      summary: (Deprecated) Synchronous one-shot migrate
+      description: |
+        DEPRECATED. Use POST /v1/migrate/preview + POST /v1/migrate/{id}/apply
+        + POST /v1/migrate/{id}/verify. Responses include `Deprecation: true`
+        and `Sunset` headers. Will be removed after v0.2.0.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MigrateRequest' }
+      responses:
+        "200":
+          description: migration report
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/MigrationReport' }
+        "400": { $ref: '#/components/responses/Error400' }
+        "500": { $ref: '#/components/responses/Error500' }
+    get:
+      tags: [migration]
+      operationId: listMigrations
+      summary: List stateful migrations
+      parameters:
+        - in: query
+          name: tenant_id
+          schema: { type: string }
+        - in: query
+          name: status
+          schema: { type: string }
+      responses:
+        "200":
+          description: list of migrations (credentials + access tokens redacted)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/StoredMigration' }
+        "500": { $ref: '#/components/responses/Error500' }
+
+  /v1/migrate/preview:
+    post:
+      tags: [migration]
+      operationId: postMigratePreview
+      summary: Begin a stateful migration - scrape source zone and issue access token
+      description: |
+        Scrapes the source zone, encrypts the target credentials at rest with
+        the server's state key, and returns an `id` + `access_token` that
+        subsequent calls must present as `Authorization: Bearer <token>`.
+        Does NOT touch the target provider.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MigratePreviewRequest' }
+      responses:
+        "200":
+          description: preview payload
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/MigratePreviewResponse' }
+        "400": { $ref: '#/components/responses/Error400' }
+        "500": { $ref: '#/components/responses/Error500' }
+
+  /v1/migrate/{id}/apply:
+    post:
+      tags: [migration]
+      operationId: postMigrateApply
+      summary: Create target zone and push records for an existing preview
+      security:
+        - bearerAccessToken: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: apply result (status, target nameservers, per-record results)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Envelope' }
+        "401": { $ref: '#/components/responses/Error400' }
+        "404": { $ref: '#/components/responses/Error404' }
+        "409": { $ref: '#/components/responses/Error409' }
+        "410": { $ref: '#/components/responses/Error400' }
+        "500": { $ref: '#/components/responses/Error500' }
+
+  /v1/migrate/{id}/verify:
+    post:
+      tags: [migration]
+      operationId: postMigrateVerify
+      summary: Run a single VerifyAgainstNS round for the target records
+      security:
+        - bearerAccessToken: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: verify summary (matched/total/details)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Envelope' }
+        "401": { $ref: '#/components/responses/Error400' }
+        "404": { $ref: '#/components/responses/Error404' }
+        "409": { $ref: '#/components/responses/Error409' }
+        "410": { $ref: '#/components/responses/Error400' }
+        "500": { $ref: '#/components/responses/Error500' }
+
+  /v1/migrate/{id}:
+    get:
+      tags: [migration]
+      operationId: getMigration
+      summary: Fetch a stateful migration row (credentials + access token redacted)
+      security:
+        - bearerAccessToken: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: stored migration
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/StoredMigration' }
+        "401": { $ref: '#/components/responses/Error400' }
+        "404": { $ref: '#/components/responses/Error404' }
+        "410": { $ref: '#/components/responses/Error400' }
+    delete:
+      tags: [migration]
+      operationId: deleteMigration
+      summary: Delete a stateful migration row
+      security:
+        - bearerAccessToken: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: deleted
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Envelope' }
+        "401": { $ref: '#/components/responses/Error400' }
+        "404": { $ref: '#/components/responses/Error404' }
+
+  /v1/zone/export:
+    post:
+      tags: [migration]
+      operationId: postZoneExport
+      summary: Export a zone snapshot from the configured provider
+      security:
+        - cloudflareToken: []
+        - awsAccessKeyId: []
+          awsSecretAccessKey: []
+        - godaddyKey: []
+          godaddySecret: []
+        - gcdnsServiceAccount: []
+      parameters:
+        - $ref: '#/components/parameters/ProviderHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ZoneExportRequest' }
+      responses:
+        "200":
+          description: zone snapshot
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Zone' }
+        "400": { $ref: '#/components/responses/Error400' }
+        "500": { $ref: '#/components/responses/Error500' }
+
+  /v1/zone/import:
+    post:
+      tags: [migration]
+      operationId: postZoneImport
+      summary: Import a zone snapshot into a target provider
+      description: |
+        Target credentials are passed in the request body
+        (`target_credentials`) because the source zone may already include
+        provider-specific records.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ZoneImportRequest' }
+      responses:
+        "200":
+          description: migration report
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/MigrationReport' }
+        "400": { $ref: '#/components/responses/Error400' }
+        "500": { $ref: '#/components/responses/Error500' }

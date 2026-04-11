@@ -1,0 +1,34 @@
+{
+  "providerId": "test.example",
+  "providerName": "Test Provider",
+  "serviceId": "mx-srv",
+  "serviceName": "MX and SRV",
+  "version": 1,
+  "logoUrl": "https://test.example/logo.png",
+  "description": "MX with priority and SRV with all fields",
+  "variableDescription": "mailHost, srvHost",
+  "syncPubKeyDomain": "test.example",
+  "syncRedirectDomain": "test.example",
+  "records": [
+    {
+      "type": "MX",
+      "host": "@",
+      "pointsTo": "%mailHost%",
+      "priority": 10,
+      "ttl": 3600,
+      "essential": "OnApply"
+    },
+    {
+      "type": "SRV",
+      "host": "@",
+      "target": "%srvHost%",
+      "service": "_sip",
+      "protocol": "_tcp",
+      "priority": 5,
+      "weight": 20,
+      "port": 5060,
+      "ttl": 3600,
+      "essential": "OnApply"
+    }
+  ]
+}

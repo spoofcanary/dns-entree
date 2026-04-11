@@ -1,0 +1,25 @@
+{
+  "name": "@dns-entree/widget",
+  "version": "0.1.0",
+  "description": "Embeddable DNS record setup widget with Domain Connect support",
+  "main": "dist/widget.js",
+  "module": "dist/widget.mjs",
+  "types": "dist/widget.d.ts",
+  "files": [
+    "dist/"
+  ],
+  "scripts": {
+    "build": "node build.js",
+    "dev": "node build.js --serve"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "typescript": "^5.7.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/spoofcanary/dns-entree.git",
+    "directory": "widget"
+  }
+}

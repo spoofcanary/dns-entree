@@ -1,0 +1,23 @@
+{
+  "providerId": "test.example",
+  "providerName": "Test Provider",
+  "serviceId": "conflict-prefix",
+  "serviceName": "SPF Conflict Prefix",
+  "version": 1,
+  "logoUrl": "https://test.example/logo.png",
+  "description": "TXT with prefix conflict mode",
+  "variableDescription": "spf",
+  "syncPubKeyDomain": "test.example",
+  "syncRedirectDomain": "test.example",
+  "records": [
+    {
+      "type": "TXT",
+      "host": "@",
+      "data": "v=spf1 include:%spf% ~all",
+      "ttl": 3600,
+      "essential": "OnApply",
+      "txtConflictMatchingMode": "Prefix",
+      "txtConflictMatchingPrefix": "v=spf1"
+    }
+  ]
+}
