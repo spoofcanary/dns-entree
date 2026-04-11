@@ -17,10 +17,14 @@ import { open, handleDCReturn } from "@dns-entree/widget";
 ### CDN (script tag)
 
 ```html
-<script src="https://unpkg.com/@dns-entree/widget@0.1.0/dist/widget.js"></script>
+<script src="https://unpkg.com/@dns-entree/widget@0.1.0/dist/widget.js"
+        integrity="sha384-rechRu251oo6Vw3JU0Mwu0idaavS8bsdFeKwJombJBLPaguIIF9wB8QWedJaRgsT"
+        crossorigin="anonymous"></script>
 ```
 
 The IIFE build exposes a global `DnsEntree` object.
+
+For enterprise deployments, self-host `widget.js` from your own origin instead of using a third-party CDN. The file is self-contained with no external dependencies.
 
 ## Quick Start
 

@@ -104,7 +104,9 @@ The migration scrapes via AXFR where available, falls back to iterated label que
 Embed a DNS setup flow in any web page. The widget auto-detects the customer's DNS provider, applies records via Domain Connect or API credentials, and falls back to copy-paste instructions.
 
 ```html
-<script src="https://unpkg.com/@dns-entree/widget@0.1.0/dist/widget.js"></script>
+<script src="https://unpkg.com/@dns-entree/widget@0.1.0/dist/widget.js"
+        integrity="sha384-rechRu251oo6Vw3JU0Mwu0idaavS8bsdFeKwJombJBLPaguIIF9wB8QWedJaRgsT"
+        crossorigin="anonymous"></script>
 <button onclick="DnsEntree.open({
   domain: 'example.com',
   apiUrl: 'http://localhost:8080',
@@ -115,6 +117,8 @@ Embed a DNS setup flow in any web page. The widget auto-detects the customer's D
 ```
 
 Three tiers, auto-selected: Domain Connect (zero credentials) > API credentials (provider token) > copy-paste fallback (no backend needed). Shadow DOM isolated, light/dark theme, under 20 KB gzipped.
+
+For enterprise deployments, self-host `widget.js` from your own domain instead of using unpkg. The file is a self-contained IIFE with no external dependencies.
 
 See [docs/guides/widget.md](docs/guides/widget.md) for the full integration guide.
 
