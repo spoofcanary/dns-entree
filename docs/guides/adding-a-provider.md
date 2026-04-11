@@ -4,7 +4,7 @@ dns-entree supports DNS providers at two levels. Most providers already work via
 
 ## Do you even need to write code?
 
-**If the provider supports Domain Connect** (Cloudflare, Name.com, 1&1/IONOS, OVH, and [dozens more](https://www.domainconnect.org/ecosystem)), it works out of the box. No plugin needed. dns-entree discovers DC support automatically, builds signed apply URLs, and the customer approves record changes through their provider's consent UI.
+**If the provider supports Domain Connect** (Cloudflare, Name.com, OVH, and [dozens more](https://www.domainconnect.org/ecosystem)), it works out of the box. No plugin needed. dns-entree discovers DC support automatically, builds signed apply URLs, and the customer approves record changes through their provider's consent UI.
 
 Check if a domain's provider supports DC:
 
@@ -13,6 +13,21 @@ entree dc-discover example.com
 ```
 
 If `supported: true`, you're done. The widget, CLI, and HTTP API all handle DC automatically.
+
+### Providers that gate Domain Connect behind Entri
+
+Some providers technically support Domain Connect but route it through [Entri](https://www.entri.com), a paid third-party aggregator. This means DC discovery returns `supported: false` for their domains unless the calling application has an Entri subscription ($249/month). dns-entree does not integrate with Entri.
+
+Known Entri-gated providers:
+
+- **GoDaddy** -- DC routed through Entri. API also gated (requires 10+ domains or Discount Domain Club). See [GoDaddy provider docs](../providers/godaddy.md).
+- **IONOS (1&1)** -- DC routed through Entri for some domain configurations.
+
+For customers on these providers, the options are:
+
+1. **API plugin** -- if the provider has a usable API (GoDaddy does, behind the paywall), write or use the existing provider plugin
+2. **Copy-paste fallback** -- the widget shows exact records to add manually
+3. **Zone migration** -- `entree migrate example.com --to cloudflare` moves the entire zone to a provider where DC works for free
 
 **You only need a provider plugin when you want API-level access** -- programmatic list/set/delete of DNS records using the provider's REST API. This enables:
 
