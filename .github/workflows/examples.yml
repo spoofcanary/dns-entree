@@ -26,7 +26,7 @@ jobs:
         env:
           EXAMPLE: ${{ matrix.example }}
         run: |
-          cd "_examples/${EXAMPLE}"
+          cd "examples/${EXAMPLE}"
           go build ./...
 
   main-module:
