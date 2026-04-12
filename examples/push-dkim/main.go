@@ -1,3 +1,5 @@
+//go:build ignore
+
 // push-dkim pushes a DKIM CNAME via AWS Route 53.
 //
 // Prereqs:

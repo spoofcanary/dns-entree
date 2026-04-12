@@ -1,3 +1,5 @@
+//go:build ignore
+
 // detect-and-apply-template detects the DNS provider for a domain, loads a
 // Domain Connect template from the cached Domain-Connect/Templates repo, and
 // applies it via a Cloudflare PushService.

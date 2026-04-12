@@ -1,3 +1,5 @@
+//go:build ignore
+
 // spf-merge is the library equivalent of `entree spf-merge`. Pure, no I/O.
 //
 // Run:

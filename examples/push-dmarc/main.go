@@ -1,3 +1,5 @@
+//go:build ignore
+
 // push-dmarc pushes a DMARC TXT record via Cloudflare.
 //
 // Prereqs:

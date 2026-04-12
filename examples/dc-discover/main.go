@@ -1,3 +1,5 @@
+//go:build ignore
+
 // dc-discover performs Domain Connect v2 discovery for a domain and prints
 // the provider settings.
 //
