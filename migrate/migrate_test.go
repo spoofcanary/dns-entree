@@ -63,7 +63,7 @@ func (p *fakeProvider) SetRecord(ctx context.Context, domain string, r entree.Re
 		return err
 	}
 	if rr != nil {
-		p.zone.records = append(p.zone.records, rr)
+		p.zone.addRecord(rr)
 	}
 	return nil
 }

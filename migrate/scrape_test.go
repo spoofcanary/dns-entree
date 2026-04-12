@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,9 +13,26 @@ import (
 
 // fakeZone holds an in-memory authoritative zone for testing.
 type fakeZone struct {
+	mu        sync.RWMutex
 	domain    string
 	records   []dns.RR
 	allowAXFR bool
+}
+
+// addRecord appends a record to the zone safely.
+func (z *fakeZone) addRecord(rr dns.RR) {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	z.records = append(z.records, rr)
+}
+
+// snapshot returns a copy of the current records for safe iteration.
+func (z *fakeZone) snapshot() []dns.RR {
+	z.mu.RLock()
+	defer z.mu.RUnlock()
+	cp := make([]dns.RR, len(z.records))
+	copy(cp, z.records)
+	return cp
 }
 
 func (z *fakeZone) handler() dns.HandlerFunc {
@@ -41,7 +59,8 @@ func (z *fakeZone) handler() dns.HandlerFunc {
 				Serial: 1, Refresh: 7200, Retry: 3600, Expire: 1209600, Minttl: 3600,
 			}
 			tr := new(dns.Transfer)
-			env := []*dns.Envelope{{RR: append(append([]dns.RR{soa}, z.records...), soa)}}
+			snap := z.snapshot()
+			env := []*dns.Envelope{{RR: append(append([]dns.RR{soa}, snap...), soa)}}
 			ch := make(chan *dns.Envelope, 1)
 			ch <- env[0]
 			close(ch)
@@ -50,13 +69,14 @@ func (z *fakeZone) handler() dns.HandlerFunc {
 		}
 
 		// Standard query: filter records by name + type.
-		for _, rr := range z.records {
+		snap := z.snapshot()
+		for _, rr := range snap {
 			h := rr.Header()
 			if !strings.EqualFold(h.Name, q.Name) {
 				continue
 			}
 			if h.Rrtype == q.Qtype {
-				m.Answer = append(m.Answer, rr)
+				m.Answer = append(m.Answer, dns.Copy(rr))
 			}
 		}
 		if len(m.Answer) == 0 {
