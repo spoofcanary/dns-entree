@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -177,6 +178,10 @@ func (s *Server) handleDetect(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, CodeBadRequest, "domain is required", nil)
 		return
 	}
+	if err := entree.ValidateDNSName(req.Domain); err != nil {
+		writeError(w, http.StatusBadRequest, CodeBadRequest, "invalid domain: "+err.Error(), nil)
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), s.opts.RequestTimeout)
 	defer cancel()
 	res, err := detectProviderFn(ctx, req.Domain)
@@ -207,6 +212,14 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Domain == "" || req.Type == "" || req.Name == "" {
 		writeError(w, http.StatusBadRequest, CodeBadRequest, "domain, type, and name are required", nil)
+		return
+	}
+	if err := entree.ValidateDNSName(req.Domain); err != nil {
+		writeError(w, http.StatusBadRequest, CodeBadRequest, "invalid domain: "+err.Error(), nil)
+		return
+	}
+	if err := entree.ValidateDNSName(req.Name); err != nil {
+		writeError(w, http.StatusBadRequest, CodeBadRequest, "invalid name: "+err.Error(), nil)
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), s.opts.RequestTimeout)
@@ -280,6 +293,22 @@ func (s *Server) handleApply(w http.ResponseWriter, r *http.Request) {
 	if req.Domain == "" || len(req.Records) == 0 {
 		writeError(w, http.StatusBadRequest, CodeBadRequest, "domain and at least one record are required", nil)
 		return
+	}
+	if err := entree.ValidateDNSName(req.Domain); err != nil {
+		writeError(w, http.StatusBadRequest, CodeBadRequest, "invalid domain: "+err.Error(), nil)
+		return
+	}
+	for i, rec := range req.Records {
+		if rec.Name != "" {
+			if err := entree.ValidateDNSName(rec.Name); err != nil {
+				writeError(w, http.StatusBadRequest, CodeBadRequest, fmt.Sprintf("invalid record[%d] name: %s", i, err.Error()), nil)
+				return
+			}
+		}
+		if err := entree.ValidateRecordValue(rec.Type, rec.Content); err != nil {
+			writeError(w, http.StatusBadRequest, CodeBadRequest, fmt.Sprintf("invalid record[%d] value: %s", i, err.Error()), nil)
+			return
+		}
 	}
 	slug, creds, credErr := parseCredentialHeaders(r)
 	if credErr != nil {
@@ -384,6 +413,10 @@ func (s *Server) handleApplyTemplate(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Domain == "" || req.ProviderID == "" || req.ServiceID == "" {
 		writeError(w, http.StatusBadRequest, CodeBadRequest, "domain, provider_id, and service_id are required", nil)
+		return
+	}
+	if err := entree.ValidateDNSName(req.Domain); err != nil {
+		writeError(w, http.StatusBadRequest, CodeBadRequest, "invalid domain: "+err.Error(), nil)
 		return
 	}
 	slug, creds, credErr := parseCredentialHeaders(r)

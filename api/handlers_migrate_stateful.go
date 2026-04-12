@@ -152,6 +152,10 @@ func (s *Server) handleMigratePreview(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, CodeBadRequest, "domain required", nil)
 		return
 	}
+	if err := entree.ValidateDNSName(req.Domain); err != nil {
+		writeError(w, http.StatusBadRequest, CodeBadRequest, "invalid domain: "+err.Error(), nil)
+		return
+	}
 	if req.Target == "" {
 		writeError(w, http.StatusBadRequest, CodeBadRequest, "target required", nil)
 		return

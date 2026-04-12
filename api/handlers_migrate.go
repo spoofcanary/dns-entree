@@ -94,6 +94,10 @@ func (s *Server) handleMigrate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, CodeBadRequest, "domain required", nil)
 		return
 	}
+	if err := entree.ValidateDNSName(req.Domain); err != nil {
+		writeError(w, http.StatusBadRequest, CodeBadRequest, "invalid domain: "+err.Error(), nil)
+		return
+	}
 	if req.Target == "" {
 		writeError(w, http.StatusBadRequest, CodeBadRequest, "target required", nil)
 		return
@@ -172,6 +176,10 @@ func (s *Server) handleZoneExport(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Domain == "" {
 		writeError(w, http.StatusBadRequest, CodeBadRequest, "domain required", nil)
+		return
+	}
+	if err := entree.ValidateDNSName(req.Domain); err != nil {
+		writeError(w, http.StatusBadRequest, CodeBadRequest, "invalid domain: "+err.Error(), nil)
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), s.opts.RequestTimeout)

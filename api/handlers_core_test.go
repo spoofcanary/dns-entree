@@ -312,3 +312,88 @@ func TestE2ECoreHandlers_DryRunNoMutations(t *testing.T) {
 		t.Fatalf("expected CREATE (no prior mutation), got %v", first)
 	}
 }
+
+// ---- validation ----
+
+func TestHandleDetect_InvalidDomain(t *testing.T) {
+	h, _ := newHandler(t, Options{})
+	code, env, _ := doJSON(t, h, "POST", "/v1/detect", `{"domain":"exam ple.com"}`, nil)
+	if code != 400 {
+		t.Fatalf("code=%d", code)
+	}
+	errObj := env["error"].(map[string]any)
+	if errObj["code"] != CodeBadRequest {
+		t.Fatalf("expected BAD_REQUEST, got %v", errObj["code"])
+	}
+	msg, _ := errObj["message"].(string)
+	if !strings.Contains(msg, "invalid domain") {
+		t.Fatalf("expected 'invalid domain' in message, got %q", msg)
+	}
+}
+
+func TestHandleDetect_ValidDomainPassesValidation(t *testing.T) {
+	prev := detectProviderFn
+	detectProviderFn = func(ctx context.Context, domain string) (*entree.DetectionResult, error) {
+		return &entree.DetectionResult{
+			Provider: entree.ProviderCloudflare, Label: "Cloudflare",
+			Supported: true, Nameservers: []string{"ns1.cloudflare.com"}, Method: "ns_pattern",
+		}, nil
+	}
+	defer func() { detectProviderFn = prev }()
+
+	h, _ := newHandler(t, Options{})
+	code, env, raw := doJSON(t, h, "POST", "/v1/detect", `{"domain":"example.com"}`, nil)
+	if code != 200 {
+		t.Fatalf("code=%d body=%s", code, raw)
+	}
+	if env["ok"] != true {
+		t.Fatalf("body=%s", raw)
+	}
+}
+
+func TestHandleApply_InvalidRecordValue(t *testing.T) {
+	h, _ := newHandler(t, Options{})
+	body := `{"domain":"example.com","records":[{"type":"A","name":"test.example.com","content":"not-an-ip"}]}`
+	code, env, _ := doJSON(t, h, "POST", "/v1/apply", body, map[string]string{
+		"X-Entree-Provider": "fake",
+	})
+	if code != 400 {
+		t.Fatalf("code=%d", code)
+	}
+	errObj := env["error"].(map[string]any)
+	if errObj["code"] != CodeBadRequest {
+		t.Fatalf("expected BAD_REQUEST, got %v", errObj["code"])
+	}
+	msg, _ := errObj["message"].(string)
+	if !strings.Contains(msg, "invalid record") {
+		t.Fatalf("expected 'invalid record' in message, got %q", msg)
+	}
+}
+
+func TestHandleVerify_InvalidDomain(t *testing.T) {
+	h, _ := newHandler(t, Options{})
+	code, env, _ := doJSON(t, h, "POST", "/v1/verify",
+		`{"domain":"exam ple.com","type":"TXT","name":"_dmarc.example.com","contains":"test"}`, nil)
+	if code != 400 {
+		t.Fatalf("code=%d", code)
+	}
+	errObj := env["error"].(map[string]any)
+	if errObj["code"] != CodeBadRequest {
+		t.Fatalf("expected BAD_REQUEST, got %v", errObj["code"])
+	}
+}
+
+func TestHandleApply_InvalidDomain(t *testing.T) {
+	h, _ := newHandler(t, Options{})
+	body := `{"domain":"exam ple.com","records":[{"type":"TXT","name":"test.example.com","content":"test"}]}`
+	code, env, _ := doJSON(t, h, "POST", "/v1/apply", body, map[string]string{
+		"X-Entree-Provider": "fake",
+	})
+	if code != 400 {
+		t.Fatalf("code=%d", code)
+	}
+	errObj := env["error"].(map[string]any)
+	if errObj["code"] != CodeBadRequest {
+		t.Fatalf("expected BAD_REQUEST, got %v", errObj["code"])
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 
+	entree "github.com/spoofcanary/dns-entree"
 	"github.com/spoofcanary/dns-entree/domainconnect"
 )
 
@@ -22,6 +23,10 @@ func (s *Server) handleDCDiscover(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.TrimSpace(req.Domain) == "" {
 		writeError(w, http.StatusBadRequest, CodeBadRequest, "domain required", nil)
+		return
+	}
+	if err := entree.ValidateDNSName(req.Domain); err != nil {
+		writeError(w, http.StatusBadRequest, CodeBadRequest, "invalid domain: "+err.Error(), nil)
 		return
 	}
 	result, err := domainconnect.Discover(r.Context(), req.Domain)
@@ -64,6 +69,12 @@ func (s *Server) handleDCApplyURL(w http.ResponseWriter, r *http.Request) {
 	var req dcApplyURLRequest
 	if !decodeJSON(w, r, BodyLimitDefault, &req) {
 		return
+	}
+	if req.Opts.Domain != "" {
+		if err := entree.ValidateDNSName(req.Opts.Domain); err != nil {
+			writeError(w, http.StatusBadRequest, CodeBadRequest, "invalid domain: "+err.Error(), nil)
+			return
+		}
 	}
 	if req.Opts.PrivateKeyPEM == "" {
 		writeError(w, http.StatusBadRequest, CodeBadRequest, "private_key_pem required", nil)

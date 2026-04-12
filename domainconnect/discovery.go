@@ -89,6 +89,9 @@ func Discover(ctx context.Context, domain string, opts ...DiscoverOption) (Disco
 	if domain == "" {
 		return DiscoveryResult{}, errors.New("domainconnect: empty domain")
 	}
+	if err := validateDomain(domain); err != nil {
+		return DiscoveryResult{}, err
+	}
 
 	o := &discoverOptions{
 		ipResolver: func(ctx context.Context, host string) ([]net.IP, error) {
@@ -172,6 +175,29 @@ func Discover(ctx context.Context, domain string, opts ...DiscoverOption) (Disco
 		Height:       s.Height,
 		Nameservers:  ns,
 	}, nil
+}
+
+// validateDomain performs basic DNS name validation to reject clearly invalid
+// input before any network I/O. This is a lightweight check local to the
+// domainconnect package to avoid a circular import on the parent entree package.
+func validateDomain(domain string) error {
+	d := strings.TrimSuffix(domain, ".")
+	if d == "" {
+		return errors.New("domainconnect: empty domain")
+	}
+	if len(d) > 253 {
+		return errors.New("domainconnect: domain exceeds 253 characters")
+	}
+	if strings.Contains(d, "..") {
+		return errors.New("domainconnect: domain contains consecutive dots")
+	}
+	if strings.ContainsAny(d, " \t\r\n/?#[]@!$&'()+,;=") {
+		return errors.New("domainconnect: domain contains invalid characters")
+	}
+	if !strings.Contains(d, ".") {
+		return errors.New("domainconnect: domain has no TLD")
+	}
+	return nil
 }
 
 func makeCheckRedirect(o *discoverOptions) func(req *http.Request, via []*http.Request) error {
