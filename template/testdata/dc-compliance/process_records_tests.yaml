@@ -1,0 +1,4301 @@
+version: "1.0"
+suite_type: process_records
+description: "Domain Connect process_records compliance tests"
+
+# =============================================================================
+# Domain Connect — process_records Compliance Test Suite
+# =============================================================================
+#
+# PURPOSE
+# -------
+# This file defines a language-agnostic compliance test suite for the
+# process_records call of any Domain Connect zone-apply implementation.
+#
+# process_records is the low-level entry point that takes inline
+# template_records and applies them against a zone without loading any
+# template file from disk.  It covers all record-type conflict rules,
+# variable substitution, group filtering, multi-aware / multi-instance
+# semantics, redirect records, and input validation.
+#
+# Any conforming library — regardless of programming language — can load this
+# file and verify correctness by driving its own process_records (or
+# equivalent) function.
+#
+# The reference Python implementation and test harness live at:
+#   https://github.com/Domain-Connect/DomainConnectApplyZone
+#
+# For the high-level apply_template tests (which load template files from
+# disk) see apply_template_tests.yaml in the same directory.
+#
+# =============================================================================
+# TOP-LEVEL FIELDS
+# =============================================================================
+#
+#   version     string   Format version of this file (currently "1.0").
+#   suite_type  string   Always "process_records" for this file.  Test
+#                        harnesses use this field to locate the correct files
+#                        when scanning a directory.
+#   description string   Human-readable summary.
+#   tests       list     Ordered list of test case objects (see below).
+#
+# =============================================================================
+# TEST CASE STRUCTURE
+# =============================================================================
+#
+# Each entry in `tests` is a mapping with the following fields:
+#
+#   id          string   Unique snake_case identifier.  Used as the test method
+#                        name by test harnesses (e.g. "test_<id>").
+#
+#   description string   Human-readable description of what the test verifies.
+#
+#   input       mapping  All inputs for the call (see INPUT FIELDS below).
+#
+#   expect      mapping  Expected outputs / behaviour (see EXPECT FIELDS below).
+#
+# =============================================================================
+# INPUT FIELDS  (input:)
+# =============================================================================
+#
+#   zone_records      list     Current DNS zone records before the template is
+#                              applied.  Each record is a mapping; see ZONE
+#                              RECORD STRUCTURE below.  May be empty ([]).
+#   template_records  list     The template record definitions to apply.  Each
+#                              record is a mapping; see TEMPLATE RECORD
+#                              STRUCTURE below.
+#   domain            string   The domain name being managed (e.g. "example.com").
+#   host              string   Sub-domain / host label to apply the template
+#                              under.  Empty string ("") means the apex (@).
+#   params            mapping  Variable substitution values keyed by variable
+#                              name (case-insensitive).  Maps to the %VARIABLE%
+#                              tokens in template records.
+#   group_ids         list     Optional.  When non-empty, only template records
+#                              whose groupId matches one of these values are
+#                              applied.  Default: [] (all records applied).
+#   multi_aware       boolean  Optional.  When true, the processor tracks
+#                              template provenance via the _dc metadata field
+#                              and applies cascade-deletion rules.
+#                              Default: false.
+#   multi_instance    boolean  Optional.  When true (and multi_aware is true),
+#                              multiple independent instances of the same
+#                              template can coexist in the zone.
+#                              Default: false.
+#   provider_id       string   Optional.  Provider identifier written into _dc
+#                              metadata; required when multi_aware is true.
+#   service_id        string   Optional.  Service identifier written into _dc
+#                              metadata; required when multi_aware is true.
+#   unique_id         string   Optional.  Instance identifier written into
+#                              _dc.id.  When omitted with multi_aware=true the
+#                              implementation assigns a random value.
+#   redirect_records  list     Optional.  Template records used to provision
+#                              the A/AAAA backing records for REDIR301/REDIR302
+#                              entries.  Required when any template_record has
+#                              type REDIR301 or REDIR302.
+#
+# =============================================================================
+# EXPECT FIELDS  (expect:)
+# =============================================================================
+#
+# A test either expects a successful outcome or an exception — never both.
+#
+# Successful outcome
+# ------------------
+#   new_count     integer  Expected number of records added to the zone.
+#   delete_count  integer  Expected number of records marked for deletion.
+#   records       list     Expected final state of the zone (all non-deleted
+#                          records) after the call.  Records are compared in a
+#                          canonical sorted order: (type, name, ttl, data).
+#                          Set to null to skip the records assertion.
+#
+# Exception outcome
+# -----------------
+#   exception     string   Name of the exception class that must be raised.
+#                          One of:
+#                            InvalidData       – bad record content or format
+#                            InvalidTemplate   – malformed or missing template
+#                            MissingParameter  – required %VARIABLE% not supplied
+#                            HostRequired      – template needs a host but none
+#                                               was provided
+#                            TypeError         – unrecognised record type string
+#
+# =============================================================================
+# ZONE RECORD STRUCTURE
+# =============================================================================
+#
+# Zone records represent the current or final state of a DNS zone.
+#
+#   type      string   DNS record type: A, AAAA, CNAME, MX, NS, TXT, SRV,
+#                      REDIR301, REDIR302, or a custom type (e.g. CAA, TYPE256).
+#   name      string   Relative owner name within the zone.  "@" means the apex.
+#   data      string   Record data / rdata value.
+#   ttl       integer  Time-to-live in seconds.
+#   priority  integer  (MX, SRV) Priority / preference value.
+#   protocol  string   (SRV) Protocol, e.g. "UDP", "TCP", "TLS".
+#   service   string   (SRV) Service host.
+#   weight    integer  (SRV) Weight value.
+#   port      integer  (SRV) Port number.
+#   _dc       mapping  (multi-aware) Template provenance metadata:
+#               id          string  Instance identifier.
+#               providerId  string  Template provider ID.
+#               serviceId   string  Template service ID.
+#               host        string  Host parameter at the time of application.
+#               essential   string  "Always" or "OnApply" — controls whether
+#                                   the record survives cascade deletion when a
+#                                   different template is applied later.
+#
+# =============================================================================
+# TEMPLATE RECORD STRUCTURE
+# =============================================================================
+#
+# Template records define what should be written to the zone.  Values may
+# contain %VARIABLE% tokens substituted from params before processing.
+# The special token "@" in a host/pointsTo field resolves to the
+# fully-qualified domain name (fqdn = [host.]domain) for the current
+# application.
+#
+# Common fields
+# -------------
+#   type       string   DNS record type (A, AAAA, CNAME, MX, NS, TXT, SRV,
+#                       SPFM, REDIR301, REDIR302, or a custom type).
+#   host       string   Relative owner name, or "@" for the apex.
+#                       For SRV records use "name" instead.
+#   ttl        integer  Time-to-live in seconds.
+#   groupId    string   Optional group identifier for selective application.
+#   essential  string   Optional.  "Always" or "OnApply" — stored in _dc
+#                       metadata when multi_aware is true.
+#
+# Type-specific fields
+# --------------------
+#   A / AAAA / CNAME / NS / MX
+#     pointsTo  string  Target value.  For MX also set priority.
+#
+#   TXT
+#     data                      string  Record content.
+#     txtConflictMatchingMode   string  Optional. "None" | "All" | "Prefix".
+#                                       Controls which existing TXT records are
+#                                       deleted.  Default: implicit (delete
+#                                       conflicting CNAMEs only).
+#     txtConflictMatchingPrefix string  Required when mode is "Prefix".
+#
+#   SRV
+#     name      string   Owner name (use instead of host).
+#     target    string   Target host.
+#     protocol  string   "UDP", "TCP", or "TLS" (leading _ stripped if present).
+#     service   string   Service host.
+#     priority  integer
+#     weight    integer
+#     port      integer
+#
+#   SPFM  (SPF merge)
+#     spfRules  string  SPF mechanism(s) to merge into the zone's SPF record.
+#
+#   REDIR301 / REDIR302
+#     target  string  Redirect destination URL.  May contain %VARIABLE% tokens.
+#                     Requires redirect_records to be set in input.
+#
+#   Custom types (CAA, TYPE<N>, …)
+#     data    string  Raw record data.  Supports %VARIABLE% substitution and
+#                     "@" → fqdn resolution.
+#
+# =============================================================================
+
+tests:
+
+  # ---------------------------------------------------------------------------
+  # CNAME
+  # ---------------------------------------------------------------------------
+  - id: cname_delete
+    description: "CNAME deletes all non-NS records at the same host"
+    input:
+      zone_records:
+        - {type: A,    name: bar, data: abc, ttl: 400}
+        - {type: AAAA, name: bar, data: abc, ttl: 400}
+        - {type: TXT,  name: bar, data: abc, ttl: 400}
+        - {type: MX,   name: bar, data: abc, ttl: 400, priority: 4}
+      template_records:
+        - {type: CNAME, host: "@", pointsTo: abc, ttl: 600}
+      domain: foo.com
+      host: bar
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 4
+      records:
+        - {type: CNAME, name: bar, data: abc, ttl: 600}
+
+  - id: cname_trailing_dot_in_pointsto
+    description: "CNAME with trailing dot in pointsTo is kept as-is"
+    input:
+      zone_records: []
+      template_records:
+        - {type: CNAME, host: "@", pointsTo: "bar.com.", ttl: 600}
+      domain: foo.com
+      host: bar
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: CNAME, name: bar, data: "bar.com.", ttl: 600}
+
+  - id: cname_conflict_itself
+    description: "CNAME raises conflict if 2 CNAMEs with same host generated"
+    input:
+      zone_records:
+      template_records:
+        - {type: CNAME, host: "blah", pointsTo: abc, ttl: 600}
+        - {type: CNAME, host: "%sub%", pointsTo: cde, ttl: 600}
+      domain: foo.com
+      host: blah
+      params: { sub: blah }
+    expect:
+      exception: InvalidData
+
+  - id: cname_not_conflict_itself_other_host
+    description: "CNAME raises conflict if 2 CNAMEs with same host generated"
+    input:
+      zone_records:
+      template_records:
+        - {type: CNAME, host: "sub", pointsTo: abc, ttl: 600}
+        - {type: CNAME, host: "%sub%", pointsTo: cde, ttl: 600}
+      domain: foo.com
+      host: blah
+      params: { sub: varsub }
+    expect:
+      new_count: 2
+      delete_count: 0
+      records:
+        - {type: CNAME, name: sub.blah, data: "abc", ttl: 600}
+        - {type: CNAME, name: varsub.blah, data: "cde", ttl: 600}
+
+  - id: cname_conflict_itself_a
+    description: "CNAME raises conflict with A other record on the same host generated"
+    input:
+      zone_records:
+      template_records:
+        - {type: CNAME, host: "blah", pointsTo: abc, ttl: 600}
+        - {type: A, host: "%sub%", pointsTo: 192.168.1.1, ttl: 600}
+      domain: foo.com
+      host: blah
+      params: { sub: blah }
+    expect:
+      exception: InvalidData
+
+
+  # ---------------------------------------------------------------------------
+  # SRV
+  # ---------------------------------------------------------------------------
+  - id: srv_add
+    description: "SRV records are added; protocol prefix underscore stripped"
+    input:
+      zone_records: []
+      template_records:
+        - {type: SRV, name: _abc, target: "127.0.0.1", protocol: UDP, service: foo.com, priority: 10, weight: 10, port: 5, ttl: 400}
+        - {type: SRV, name: _abc, target: "127.0.0.1", protocol: TCP, service: foo.com, priority: 10, weight: 10, port: 5, ttl: 400}
+        - {type: SRV, name: _abc, target: "127.0.0.1", protocol: TLS, service: foo.com, priority: 10, weight: 10, port: 5, ttl: 400}
+      domain: foo.com
+      host: bar
+      params: {v1: "1"}
+    expect:
+      new_count: 3
+      delete_count: 0
+      records:
+        - {type: SRV, name: _abc.bar, data: "127.0.0.1", protocol: udp, service: foo.com, priority: 10, weight: 10, port: 5, ttl: 400}
+        - {type: SRV, name: _abc.bar, data: "127.0.0.1", protocol: tcp, service: foo.com, priority: 10, weight: 10, port: 5, ttl: 400}
+        - {type: SRV, name: _abc.bar, data: "127.0.0.1", protocol: tls, service: foo.com, priority: 10, weight: 10, port: 5, ttl: 400}
+
+  - id: srv_remove_underscore_in_protocol
+    description: "SRV protocol leading underscore is stripped"
+    input:
+      zone_records: []
+      template_records:
+        - {type: SRV, name: _abc, target: "127.0.0.1", protocol: _UDP, service: foo.com, priority: 10, weight: 10, port: 5, ttl: 400}
+      domain: foo.com
+      host: bar
+      params: {v1: "1"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: SRV, name: _abc.bar, data: "127.0.0.1", protocol: udp, service: foo.com, priority: 10, weight: 10, port: 5, ttl: 400}
+
+  - id: srv_at_name_on_subdomain
+    description: "SRV with @ name resolves to host subdomain"
+    input:
+      zone_records: []
+      template_records:
+        - {type: SRV, name: "@", target: "127.0.0.1", protocol: UDP, service: foo.com, priority: 10, weight: 10, port: 5, ttl: 400}
+      domain: foo.com
+      host: bar
+      params: {v1: "1"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: SRV, name: bar, data: "127.0.0.1", protocol: udp, service: foo.com, priority: 10, weight: 10, port: 5, ttl: 400}
+
+  - id: srv_replace
+    description: "SRV record replaces existing SRV at same host/protocol/service"
+    input:
+      zone_records:
+        - {type: SRV, name: _abc.bar, data: "127.0.0.1", protocol: UDP, service: foo.com, priority: 10, weight: 10, port: 5, ttl: 400}
+      template_records:
+        - {type: SRV, name: _abc, target: "127.0.0.1", protocol: UDP, service: bar.com, priority: 10, weight: 10, port: 5, ttl: 400}
+      domain: foo.com
+      host: bar
+      params: {v1: "1"}
+    expect:
+      new_count: 1
+      delete_count: 1
+      records:
+        - {type: SRV, name: _abc.bar, data: "127.0.0.1", protocol: udp, service: bar.com, priority: 10, weight: 10, port: 5, ttl: 400}
+
+  # ---------------------------------------------------------------------------
+  # SPFM
+  # ---------------------------------------------------------------------------
+  - id: spfm_merge_new
+    description: "SPFM creates a new SPF TXT record when none exists"
+    input:
+      zone_records:
+        - {type: A,    name: "@", data: old.old.old.old, ttl: 500}
+        - {type: AAAA, name: "@", data: bog.bog.bog.bog, ttl: 200}
+      template_records:
+        - {type: SPFM, host: "@", spfRules: foo}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: A,    name: "@", data: old.old.old.old, ttl: 500}
+        - {type: AAAA, name: "@", data: bog.bog.bog.bog, ttl: 200}
+        - {type: TXT,  name: "@", data: "v=spf1 foo ~all", ttl: 6000}
+
+  - id: spfm_merge_existing
+    description: "SPFM merges rules into an existing SPF TXT record"
+    input:
+      zone_records:
+        - {type: A,   name: "@", data: old.old.old.old, ttl: 500}
+        - {type: TXT, name: "@", data: "v=spf1 bar -all", ttl: 5000}
+        - {type: AAAA, name: "@", data: bog.bog.bog.bog, ttl: 200}
+      template_records:
+        - {type: SPFM, host: "@", spfRules: foo}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 1
+      records:
+        - {type: A,    name: "@", data: old.old.old.old, ttl: 500}
+        - {type: AAAA, name: "@", data: bog.bog.bog.bog, ttl: 200}
+        - {type: TXT,  name: "@", data: "v=spf1 foo bar -all", ttl: 5000}
+
+  - id: spfm_rule_already_present
+    description: "SPFM does nothing when the rule is already present"
+    input:
+      zone_records:
+        - {type: TXT, name: "@", data: "v=spf1 foo -all", ttl: 5000}
+      template_records:
+        - {type: SPFM, host: "@", spfRules: foo}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 0
+      delete_count: 0
+      records:
+        - {type: TXT, name: "@", data: "v=spf1 foo -all", ttl: 5000}
+
+  - id: spfm_new_uses_template_ttl
+    description: "SPFM uses the template ttl when creating a new SPF record"
+    input:
+      zone_records: []
+      template_records:
+        - {type: SPFM, host: "@", spfRules: foo, ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: TXT, name: "@", data: "v=spf1 foo ~all", ttl: 300}
+
+  - id: spfm_new_defaults_ttl_6000
+    description: "SPFM falls back to ttl 6000 when template has no ttl and no existing record"
+    input:
+      zone_records: []
+      template_records:
+        - {type: SPFM, host: "@", spfRules: foo}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: TXT, name: "@", data: "v=spf1 foo ~all", ttl: 6000}
+
+  - id: spfm_merge_keeps_existing_ttl
+    description: "SPFM merge keeps the ttl from the existing SPF record, ignoring any template ttl"
+    input:
+      zone_records:
+        - {type: TXT, name: "@", data: "v=spf1 bar -all", ttl: 1800}
+      template_records:
+        - {type: SPFM, host: "@", spfRules: foo, ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 1
+      records:
+        - {type: TXT, name: "@", data: "v=spf1 foo bar -all", ttl: 1800}
+
+  # ---------------------------------------------------------------------------
+  # NS
+  # ---------------------------------------------------------------------------
+  - id: ns_delete_with_a
+    description: "A record deletes an NS at the same host"
+    input:
+      zone_records:
+        - {type: NS, name: foo, data: abc, ttl: 500}
+      template_records:
+        - {type: A, host: foo, pointsTo: "127.0.0.1", ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 1
+      records:
+        - {type: A, name: foo, data: "127.0.0.1", ttl: 300}
+
+  - id: ns_delete_with_a_through_host
+    description: "A record deletes NS at host resolved through the host parameter"
+    input:
+      zone_records:
+        - {type: NS, name: foo.bar, data: abc, ttl: 500}
+      template_records:
+        - {type: A, host: foo, pointsTo: "127.0.0.0", ttl: 300}
+      domain: foo.com
+      host: bar
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 1
+      records:
+        - {type: A, name: foo.bar, data: "127.0.0.0", ttl: 300}
+
+  - id: ns_not_delete_with_a_below
+    description: "A record does not delete NS at host below A"
+    input:
+      zone_records:
+        - {type: NS, name: foo.bar, data: abc, ttl: 500}
+      template_records:
+        - {type: A, host: foo, pointsTo: "127.0.0.0", ttl: 300}
+      domain: foo.com
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: A, name: foo, data: "127.0.0.0", ttl: 300}
+        - {type: NS, name: foo.bar, data: abc, ttl: 500}
+
+  - id: ns_deletes_a_below
+    description: "NS record does delete A at host below NS"
+    input:
+      zone_records:
+        - {type: A, name: foo.bar, data: "127.0.0.0", ttl: 300}
+      template_records:
+        - {type: NS, host: bar, pointsTo: abc, ttl: 500}
+      domain: foo.com
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 1
+      records:
+        - {type: NS, name: bar, data: abc, ttl: 500}
+
+
+  - id: ns_deletes_a
+    description: "NS record deletes an A record at the same host"
+    input:
+      zone_records:
+        - {type: A, name: foo, data: abc, ttl: 500}
+      template_records:
+        - {type: NS, host: foo, pointsTo: def, ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 1
+      records:
+        - {type: NS, name: foo, data: def, ttl: 300}
+
+  - id: ns_deletes_a_through_host
+    description: "NS record (applied via host) cascades to delete child A records"
+    input:
+      zone_records:
+        - {type: A, name: www.foo.bar, data: abc, ttl: 500}
+      template_records:
+        - {type: NS, host: "@", pointsTo: def, ttl: 300}
+      domain: foo.com
+      host: bar
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 1
+      records:
+        - {type: NS, name: bar, data: def, ttl: 300}
+
+  - id: ns_cascade_delete_multiple
+    description: "NS record cascades to delete all A records under host, but not sibling hosts"
+    input:
+      zone_records:
+        - {type: A, name: bar,     data: abc, ttl: 500}
+        - {type: A, name: www.bar, data: abc, ttl: 500}
+        - {type: A, name: xbar,    data: abc, ttl: 500}
+      template_records:
+        - {type: NS, host: "@", pointsTo: def, ttl: 300}
+      domain: foo.com
+      host: bar
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 2
+      records:
+        - {type: NS, name: bar,  data: def, ttl: 300}
+        - {type: A,  name: xbar, data: abc, ttl: 500}
+
+  - id: NS_no_conflict_itself
+    description: "NS raises no conflict if 2 NSs with same host generated"
+    input:
+      zone_records:
+      template_records:
+        - {type: NS, host: "%sub1%", pointsTo: abc, ttl: 600}
+        - {type: NS, host: "%sub2%", pointsTo: cde, ttl: 600}
+      domain: foo.com
+      params: { sub1: 'blah', sub2: 'blah' }
+    expect:
+      new_count: 2
+      delete_count: 0
+      records:
+        - {type: NS, name: blah, data: abc, ttl: 600}
+        - {type: NS, name: blah, data: cde, ttl: 600}
+
+  - id: NS_no_conflict_other_above
+    description: "NS raises no conflict if other record generated above"
+    input:
+      zone_records:
+      template_records:
+        - {type: NS, host: "%sub1%", pointsTo: abc, ttl: 600}
+        - {type: A, host: "%sub2%", pointsTo: 1.1.1.1, ttl: 600}
+      domain: foo.com
+      params: { sub1: 'delegated.blah', sub2: 'blah' }
+    expect:
+      new_count: 2
+      delete_count: 0
+      records:
+        - {type: NS, name: delegated.blah, data: abc, ttl: 600}
+        - {type: A, name: blah, data: 1.1.1.1, ttl: 600}
+
+  - id: NS_conflict_itself_a
+    description: "NS raises conflict with A other record on the same host generated"
+    input:
+      zone_records:
+      template_records:
+        - {type: NS, host: "%sub2%", pointsTo: abc, ttl: 600}
+        - {type: A, host: "%sub1%", pointsTo: 192.168.1.1, ttl: 600}
+      domain: foo.com
+      params: { sub1: blah, sub2: blah }
+    expect:
+      exception: InvalidData
+
+  - id: NS_conflict_itself_a_below
+    description: "NS raises conflict with A other record below the same host generated"
+    input:
+      zone_records:
+      template_records:
+        - {type: NS, host: "%sub2%", pointsTo: abc, ttl: 600}
+        - {type: A, host: "%sub1%.%sub2%", pointsTo: 192.168.1.1, ttl: 600}
+      domain: foo.com
+      params: { sub1: blah, sub2: blah }
+    expect:
+      exception: InvalidData
+
+  # ---------------------------------------------------------------------------
+  # TXT
+  # ---------------------------------------------------------------------------
+  - id: txt_underscore_first
+    description: "TXT record with leading underscore in host is added"
+    input:
+      zone_records: []
+      template_records:
+        - {type: TXT, host: "_bar.sub", data: abcnew, ttl: 600}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: TXT, name: "_bar.sub", data: abcnew, ttl: 600}
+
+  - id: txt_underscore_middle
+    description: "TXT record with underscore in middle of host is added"
+    input:
+      zone_records: []
+      template_records:
+        - {type: TXT, host: "bar._sub", data: abcnew, ttl: 600}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: TXT, name: "bar._sub", data: abcnew, ttl: 600}
+
+  - id: txt_underscore_both
+    description: "TXT record with underscore in both parts of host is added"
+    input:
+      zone_records: []
+      template_records:
+        - {type: TXT, host: "_bar._sub", data: abcnew, ttl: 600}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: TXT, name: "_bar._sub", data: abcnew, ttl: 600}
+
+  - id: txt_no_conflict_mode_cname_conflict
+    description: "TXT (default/no conflict mode) only deletes conflicting CNAME, not other TXTs"
+    input:
+      zone_records:
+        - {type: TXT,   name: "@",  data: abc456, ttl: 500}
+        - {type: TXT,   name: "@",  data: abc123, ttl: 500}
+        - {type: CNAME, name: foo,  data: foo.com, ttl: 500}
+      template_records:
+        - {type: TXT, host: foo, data: abcnew, ttl: 600}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 1
+      records:
+        - {type: TXT, name: "@",  data: abc456, ttl: 500}
+        - {type: TXT, name: "@",  data: abc123, ttl: 500}
+        - {type: TXT, name: foo,  data: abcnew, ttl: 600}
+
+  - id: txt_matching_mode_none
+    description: "TXT with txtConflictMatchingMode=None adds without deleting existing TXTs"
+    input:
+      zone_records:
+        - {type: TXT, name: "@", data: abc456, ttl: 500}
+        - {type: TXT, name: "@", data: abc123, ttl: 500}
+        - {type: TXT, name: "@", data: "789",  ttl: 500}
+      template_records:
+        - {type: TXT, host: "@", data: abcnew, ttl: 600, txtConflictMatchingMode: None}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: TXT, name: "@", data: abc456, ttl: 500}
+        - {type: TXT, name: "@", data: abc123, ttl: 500}
+        - {type: TXT, name: "@", data: "789",  ttl: 500}
+        - {type: TXT, name: "@", data: abcnew, ttl: 600}
+
+  - id: txt_matching_mode_all
+    description: "TXT with txtConflictMatchingMode=All deletes all TXTs at the same host"
+    input:
+      zone_records:
+        - {type: TXT, name: "@",  data: xyz456, ttl: 500}
+        - {type: TXT, name: foo,  data: abc456, ttl: 500}
+        - {type: TXT, name: foo,  data: abc123, ttl: 500}
+        - {type: TXT, name: foo,  data: "789",  ttl: 500}
+      template_records:
+        - {type: TXT, host: foo, data: abcnew, ttl: 600, txtConflictMatchingMode: All}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 3
+      records:
+        - {type: TXT, name: "@",  data: xyz456, ttl: 500}
+        - {type: TXT, name: foo,  data: abcnew, ttl: 600}
+
+  - id: txt_matching_mode_prefix
+    description: "TXT with txtConflictMatchingMode=Prefix deletes TXTs starting with specified prefix"
+    input:
+      zone_records:
+        - {type: TXT, name: "@",  data: abc789, ttl: 500}
+        - {type: TXT, name: foo,  data: abc456, ttl: 500}
+        - {type: TXT, name: foo,  data: abc123, ttl: 500}
+        - {type: TXT, name: foo,  data: "789",  ttl: 500}
+      template_records:
+        - {type: TXT, host: foo, data: abcnew, ttl: 600, txtConflictMatchingMode: Prefix, txtConflictMatchingPrefix: abc}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 2
+      records:
+        - {type: TXT, name: "@",  data: abc789, ttl: 500}
+        - {type: TXT, name: foo,  data: "789",  ttl: 500}
+        - {type: TXT, name: foo,  data: abcnew, ttl: 600}
+
+  # ---------------------------------------------------------------------------
+  # A
+  # ---------------------------------------------------------------------------
+  - id: a_deletes_a_aaaa_cname
+    description: "A record deletes conflicting A, AAAA, and CNAME at the same host"
+    input:
+      zone_records:
+        - {type: A,    name: bar,          data: abc, ttl: 400}
+        - {type: AAAA, name: bar,          data: abc, ttl: 400}
+        - {type: CNAME, name: bar,         data: abc, ttl: 400}
+        - {type: A,    name: random.value, data: abc, ttl: 400}
+      template_records:
+        - {type: A, host: "@", pointsTo: "127.0.0.1", ttl: 600}
+      domain: foo.com
+      host: bar
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 3
+      records:
+        - {type: A, name: bar,          data: "127.0.0.1", ttl: 600}
+        - {type: A, name: random.value, data: abc,         ttl: 400}
+
+  # ---------------------------------------------------------------------------
+  # MX
+  # ---------------------------------------------------------------------------
+  - id: mx_conflict_replace
+    description: "MX record replaces existing MX records at the same host"
+    input:
+      zone_records:
+        - {type: MX,    name: "@", data: mx1,  ttl: 400, priority: 4}
+        - {type: MX,    name: "@", data: mx2,  ttl: 400, priority: 10}
+        - {type: CNAME, name: foo, data: abc,  ttl: 400}
+        - {type: A,     name: "@", data: abc,  ttl: 400}
+      template_records:
+        - {type: MX, host: "@", pointsTo: newmx, ttl: 400, priority: 5}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 2
+      records:
+        - {type: MX,    name: "@", data: newmx, ttl: 400, priority: 5}
+        - {type: CNAME, name: foo, data: abc,   ttl: 400}
+        - {type: A,     name: "@", data: abc,   ttl: 400}
+
+  # ---------------------------------------------------------------------------
+  # Variable / Parameter resolution
+  # ---------------------------------------------------------------------------
+  - id: param_host_set_to_domain_only
+    description: "Host set to domain.  resolves to apex (@)"
+    input:
+      zone_records: []
+      template_records:
+        - {type: A,     host: "%domain%.", pointsTo: "127.0.0.1", ttl: 600}
+        - {type: CNAME, host: "@",         pointsTo: foo.bar.com, ttl: 600}
+      domain: example.com
+      host: foo
+      params: {}
+    expect:
+      new_count: 2
+      delete_count: 0
+      records:
+        - {type: A,     name: "@",  data: "127.0.0.1", ttl: 600}
+        - {type: CNAME, name: foo,  data: foo.bar.com, ttl: 600}
+
+  - id: param_long_domain_fully_qualified
+    description: "Fully-qualified long host is trimmed to relative name"
+    input:
+      zone_records: []
+      template_records:
+        - {type: A, host: "foo.bar.x.y.foo.com.", pointsTo: "127.0.0.1", ttl: 600}
+      domain: foo.com
+      host: bar
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: A, name: foo.bar.x.y, data: "127.0.0.1", ttl: 600}
+
+  - id: param_host_domain_without_dot
+    description: "%host%.%domain% without trailing dot is treated as literal (appended to host)"
+    input:
+      zone_records: []
+      template_records:
+        - {type: A, host: "%host%.%domain%", pointsTo: "127.0.0.1", ttl: 600}
+      domain: foo.com
+      host: bar
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: A, name: bar.foo.com.bar, data: "127.0.0.1", ttl: 600}
+
+  - id: param_host_domain_with_dot
+    description: "%host%.%domain%. with trailing dot resolves to host"
+    input:
+      zone_records: []
+      template_records:
+        - {type: A, host: "%host%.%domain%.", pointsTo: "127.0.0.1", ttl: 600}
+      domain: foo.com
+      host: bar
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: A, name: bar, data: "127.0.0.1", ttl: 600}
+
+  - id: param_fqdn_without_dot
+    description: "%fqdn% without trailing dot is treated as literal"
+    input:
+      zone_records: []
+      template_records:
+        - {type: A, host: "%fqdn%", pointsTo: "127.0.0.1", ttl: 600}
+      domain: foo.com
+      host: bar
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: A, name: bar.foo.com.bar, data: "127.0.0.1", ttl: 600}
+
+  - id: param_fqdn_with_dot
+    description: "%fqdn%. with trailing dot resolves to host"
+    input:
+      zone_records: []
+      template_records:
+        - {type: A, host: "%fqdn%.", pointsTo: "127.0.0.1", ttl: 600}
+      domain: foo.com
+      host: bar
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: A, name: bar, data: "127.0.0.1", ttl: 600}
+
+  - id: param_at_in_host_with_host_param
+    description: "@ in template host resolves to the host parameter"
+    input:
+      zone_records: []
+      template_records:
+        - {type: A, host: "@", pointsTo: "127.0.0.1", ttl: 400}
+      domain: foo.com
+      host: bar
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: A, name: bar, data: "127.0.0.1", ttl: 400}
+
+  - id: param_at_in_pointsto_with_host
+    description: "@ in template pointsTo resolves to fqdn when host is set"
+    input:
+      zone_records: []
+      template_records:
+        - {type: CNAME, host: "@", pointsTo: "@", ttl: 400}
+      domain: foo.com
+      host: bar
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: CNAME, name: bar, data: bar.foo.com, ttl: 400}
+
+  - id: param_at_in_host_without_host_param
+    description: "@ in template host resolves to apex when no host parameter given"
+    input:
+      zone_records: []
+      template_records:
+        - {type: A, host: "@", pointsTo: "127.0.0.1", ttl: 400}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: A, name: "@", data: "127.0.0.1", ttl: 400}
+
+  - id: param_at_in_pointsto_without_host
+    description: "@ in template pointsTo resolves to domain when no host parameter given"
+    input:
+      zone_records: []
+      template_records:
+        - {type: CNAME, host: bar, pointsTo: "@", ttl: 400}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: CNAME, name: bar, data: foo.com, ttl: 400}
+
+  - id: param_at_in_pointsto_mx_with_host
+    description: "@ in MX pointsTo resolves to fqdn when host is set"
+    input:
+      zone_records: []
+      template_records:
+        - {type: MX, host: "@", pointsTo: "@", priority: 10, ttl: 400}
+      domain: foo.com
+      host: bar
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: MX, name: bar, data: bar.foo.com, priority: 10, ttl: 400}
+
+  - id: param_at_in_pointsto_mx_without_host
+    description: "@ in MX pointsTo resolves to domain when no host parameter given"
+    input:
+      zone_records: []
+      template_records:
+        - {type: MX, host: "@", pointsTo: "@", priority: 10, ttl: 400}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: MX, name: "@", data: foo.com, priority: 10, ttl: 400}
+
+  - id: param_at_in_pointsto_a_with_host
+    description: "@ in A pointsTo raises InvalidData — fqdn is not a valid IPv4"
+    input:
+      zone_records: []
+      template_records:
+        - {type: A, host: "@", pointsTo: "@", ttl: 400}
+      domain: foo.com
+      host: bar
+      params: {}
+    expect:
+      exception: InvalidData
+
+  - id: param_at_in_pointsto_a_without_host
+    description: "@ in A pointsTo raises InvalidData — fqdn is not a valid IPv4"
+    input:
+      zone_records: []
+      template_records:
+        - {type: A, host: "@", pointsTo: "@", ttl: 400}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      exception: InvalidData
+
+  - id: param_at_in_pointsto_aaaa_with_host
+    description: "@ in AAAA pointsTo raises InvalidData — fqdn is not a valid IPv6"
+    input:
+      zone_records: []
+      template_records:
+        - {type: AAAA, host: "@", pointsTo: "@", ttl: 400}
+      domain: foo.com
+      host: bar
+      params: {}
+    expect:
+      exception: InvalidData
+
+  - id: param_at_in_pointsto_aaaa_without_host
+    description: "@ in AAAA pointsTo raises InvalidData — fqdn is not a valid IPv6"
+    input:
+      zone_records: []
+      template_records:
+        - {type: AAAA, host: "@", pointsTo: "@", ttl: 400}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      exception: InvalidData
+
+  - id: param_at_in_pointsto_ns_with_host
+    description: "@ in NS pointsTo raises InvalidData — circular delegation"
+    input:
+      zone_records: []
+      template_records:
+        - {type: NS, host: "@", pointsTo: "@", ttl: 400}
+      domain: foo.com
+      host: bar
+      params: {}
+    expect:
+      exception: InvalidData
+
+  - id: param_at_in_pointsto_ns_without_host
+    description: "@ in NS pointsTo raises InvalidData — circular delegation"
+    input:
+      zone_records: []
+      template_records:
+        - {type: NS, host: "@", pointsTo: "@", ttl: 400}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      exception: InvalidData
+
+  - id: param_empty_pointsto_a
+    description: "Empty pointsTo in A raises InvalidData"
+    input:
+      zone_records: []
+      template_records:
+        - {type: A, host: "@", pointsTo: "", ttl: 400}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      exception: InvalidData
+
+  - id: param_empty_pointsto_aaaa
+    description: "Empty pointsTo in AAAA raises InvalidData"
+    input:
+      zone_records: []
+      template_records:
+        - {type: AAAA, host: "@", pointsTo: "", ttl: 400}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      exception: InvalidData
+
+  - id: param_empty_pointsto_cname
+    description: "Empty pointsTo in CNAME raises InvalidData"
+    input:
+      zone_records: []
+      template_records:
+        - {type: CNAME, host: sub, pointsTo: "", ttl: 400}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      exception: InvalidData
+
+  - id: param_empty_pointsto_mx
+    description: "Empty pointsTo in MX raises InvalidData"
+    input:
+      zone_records: []
+      template_records:
+        - {type: MX, host: "@", pointsTo: "", priority: 10, ttl: 400}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      exception: InvalidData
+
+  - id: param_empty_pointsto_ns
+    description: "Empty pointsTo in NS raises InvalidData"
+    input:
+      zone_records: []
+      template_records:
+        - {type: NS, host: "@", pointsTo: "", ttl: 400}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      exception: InvalidData
+
+  - id: param_empty_target_srv
+    description: "Empty target in SRV raises InvalidData"
+    input:
+      zone_records: []
+      template_records:
+        - {type: SRV, name: "@", target: "", protocol: tcp, service: foo.com,
+           priority: 10, weight: 10, port: 80, ttl: 400}
+      domain: foo.com
+      host: bar
+      params: {}
+    expect:
+      exception: InvalidData
+
+  - id: param_at_in_target_srv_with_host
+    description: "@ in SRV target resolves to fqdn when host is set"
+    input:
+      zone_records: []
+      template_records:
+        - {type: SRV, name: "@", target: "@", protocol: tcp, service: foo.com,
+           priority: 10, weight: 10, port: 80, ttl: 400}
+      domain: foo.com
+      host: bar
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: SRV, name: bar, data: bar.foo.com, protocol: tcp,
+           service: foo.com, priority: 10, weight: 10, port: 80, ttl: 400}
+
+  - id: param_at_in_target_srv_without_host
+    description: "@ in SRV target with no host raises InvalidData because _proto.@ is invalid"
+    input:
+      zone_records: []
+      template_records:
+        - {type: SRV, name: "@", target: "@", protocol: tcp, service: foo.com,
+           priority: 10, weight: 10, port: 80, ttl: 400}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      exception: InvalidData
+
+  - id: param_at_in_data_txt_with_host
+    description: "@ in TXT data is stored as a literal string — TXT content is opaque"
+    input:
+      zone_records: []
+      template_records:
+        - {type: TXT, host: "@", data: "@", ttl: 400}
+      domain: foo.com
+      host: bar
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: TXT, name: bar, data: "@", ttl: 400}
+
+  - id: param_at_in_data_txt_without_host
+    description: "@ in TXT data is stored as a literal string — TXT content is opaque"
+    input:
+      zone_records: []
+      template_records:
+        - {type: TXT, host: "@", data: "@", ttl: 400}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: TXT, name: "@", data: "@", ttl: 400}
+
+  - id: param_empty_data_txt
+    description: "Empty data in TXT is stored as an empty string — TXT content is opaque"
+    input:
+      zone_records: []
+      template_records:
+        - {type: TXT, host: "@", data: "", ttl: 400}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: TXT, name: "@", data: "", ttl: 400}
+
+  - id: param_at_in_data_custom_with_host
+    description: "@ in custom record data raises InvalidData — @ resolution is not supported for custom types"
+    input:
+      zone_records: []
+      template_records:
+        - {type: CAA, host: "@", data: "@", ttl: 400}
+      domain: foo.com
+      host: bar
+      params: {}
+    expect:
+      exception: InvalidData
+
+  - id: param_at_in_data_custom_without_host
+    description: "@ in custom record data raises InvalidData — @ resolution is not supported for custom types"
+    input:
+      zone_records: []
+      template_records:
+        - {type: CAA, host: "@", data: "@", ttl: 400}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      exception: InvalidData
+
+  - id: param_empty_data_custom
+    description: "Empty data in custom record raises InvalidData"
+    input:
+      zone_records: []
+      template_records:
+        - {type: CAA, host: "@", data: "", ttl: 400}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      exception: InvalidData
+
+  - id: param_fqdn_in_data
+    description: "%fqdn% in data field is substituted"
+    input:
+      zone_records: []
+      template_records:
+        - {type: TXT, host: "@", data: "abc%fqdn%def", ttl: 400}
+      domain: foo.com
+      host: bar
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: TXT, name: bar, data: abcbar.foo.comdef, ttl: 400}
+
+  - id: param_host_in_data
+    description: "%host% in data field is substituted"
+    input:
+      zone_records: []
+      template_records:
+        - {type: TXT, host: "@", data: "abc%host%def", ttl: 400}
+      domain: foo.com
+      host: bar
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: TXT, name: bar, data: abcbardef, ttl: 400}
+
+  - id: param_domain_in_data
+    description: "%domain% in data field is substituted"
+    input:
+      zone_records: []
+      template_records:
+        - {type: TXT, host: "@", data: "abc%domain%def", ttl: 400}
+      domain: foo.com
+      host: bar
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: TXT, name: bar, data: abcfoo.comdef, ttl: 400}
+
+  - id: param_random_variable
+    description: "Custom variable in template is substituted from params"
+    input:
+      zone_records: []
+      template_records:
+        - {type: A, host: "@", pointsTo: "127.0.0.%v1%", ttl: 400}
+      domain: foo.com
+      host: bar
+      params: {v1: "1"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: A, name: bar, data: "127.0.0.1", ttl: 400}
+
+  - id: param_missing_variable
+    description: "Missing variable raises MissingParameter"
+    input:
+      zone_records: []
+      template_records:
+        - {type: A, host: "@", pointsTo: "%missing%", ttl: 600}
+      domain: foo.com
+      host: bar
+      params: {}
+    expect:
+      exception: MissingParameter
+
+  - id: param_percent_in_value
+    description: "Percent signs in parameter values are preserved"
+    input:
+      zone_records: []
+      template_records:
+        - {type: TXT, host: "@", data: "abc%fff%def", ttl: 400}
+      domain: foo.com
+      host: bar
+      params: {fff: "%ab%cd%"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: TXT, name: bar, data: "abc%ab%cd%def", ttl: 400}
+
+  # ---------------------------------------------------------------------------
+  # Group filtering
+  # ---------------------------------------------------------------------------
+  - id: group_apply_one
+    description: "Only records in the specified group are applied"
+    input:
+      zone_records:
+        - {type: A, name: bar, data: abc, ttl: 400}
+      template_records:
+        - {type: A,   host: "@", pointsTo: "127.0.0.1", ttl: 600, groupId: "1"}
+        - {type: TXT, host: "@", data: testdata,         ttl: 600, groupId: "2"}
+      domain: foo.com
+      host: bar
+      params: {}
+      group_ids: ["1"]
+    expect:
+      new_count: 1
+      delete_count: 1
+      records:
+        - {type: A, name: bar, data: "127.0.0.1", ttl: 600}
+
+  - id: group_apply_none_matching
+    description: "No records applied when group_ids contains no matching group"
+    input:
+      zone_records:
+        - {type: A, name: bar, data: abc, ttl: 400}
+      template_records:
+        - {type: A,   host: "@", pointsTo: "127.0.0.1", ttl: 600, groupId: "1"}
+        - {type: TXT, host: "@", data: testdata,         ttl: 600, groupId: "2"}
+      domain: foo.com
+      host: bar
+      params: {}
+      group_ids: ["3"]
+    expect:
+      new_count: 0
+      delete_count: 0
+      records:
+        - {type: A, name: bar, data: abc, ttl: 400}
+
+  - id: group_apply_two
+    description: "Records from multiple groups can be applied together"
+    input:
+      zone_records:
+        - {type: A, name: bar, data: abc, ttl: 400}
+      template_records:
+        - {type: A,   host: "@", pointsTo: "127.0.0.1", ttl: 600, groupId: "1"}
+        - {type: TXT, host: "@", data: testdata,         ttl: 600, groupId: "2"}
+      domain: foo.com
+      host: bar
+      params: {}
+      group_ids: ["1", "2"]
+    expect:
+      new_count: 2
+      delete_count: 1
+      records:
+        - {type: A,   name: bar, data: "127.0.0.1", ttl: 600}
+        - {type: TXT, name: bar, data: testdata,    ttl: 600}
+
+  # ---------------------------------------------------------------------------
+  # Multi-aware / multi-instance
+  # ---------------------------------------------------------------------------
+  - id: multi_reapply_same_template
+    description: "Re-applying the same template replaces old records"
+    input:
+      zone_records:
+        - type: A
+          name: "@"
+          data: "127.0.0.1"
+          ttl: 400
+          _dc: {id: abc, providerId: e.d.org, serviceId: t1, host: "@", essential: Always}
+      template_records:
+        - {type: A, host: "@", pointsTo: "127.0.0.2", ttl: 500}
+      domain: foo.com
+      host: "@"
+      params: {}
+      multi_aware: true
+      multi_instance: false
+      provider_id: e.d.org
+      service_id: t1
+      unique_id: def
+    expect:
+      new_count: 1
+      delete_count: 1
+      records:
+        - type: A
+          name: "@"
+          data: "127.0.0.2"
+          ttl: 500
+          _dc: {id: def, providerId: e.d.org, serviceId: t1, host: "@", essential: Always}
+
+  - id: multi_reapply_txt_without_multi_instance
+    description: "Re-applying TXT without multi-instance replaces old TXT record"
+    input:
+      zone_records:
+        - type: TXT
+          name: "@"
+          data: dataold
+          ttl: 400
+          _dc: {id: abc, providerId: e.d.org, serviceId: t1, host: "@", essential: Always}
+      template_records:
+        - {type: TXT, host: "@", data: datanew, ttl: 500, txtConflictMatchingMode: None}
+      domain: foo.com
+      host: "@"
+      params: {}
+      multi_aware: true
+      multi_instance: false
+      provider_id: e.d.org
+      service_id: t1
+      unique_id: def
+    expect:
+      new_count: 1
+      delete_count: 1
+      records:
+        - type: TXT
+          name: "@"
+          data: datanew
+          ttl: 500
+          _dc: {id: def, providerId: e.d.org, serviceId: t1, host: "@", essential: Always}
+
+  - id: multi_reapply_txt_with_multi_instance
+    description: "Re-applying TXT with multi-instance keeps old TXT and adds new one"
+    input:
+      zone_records:
+        - type: TXT
+          name: "@"
+          data: olddata
+          ttl: 400
+          _dc: {id: abc, providerId: e.d.org, serviceId: t1, host: "@", essential: Always}
+      template_records:
+        - {type: TXT, host: "@", data: newdata, ttl: 500, txtConflictMatchingMode: None}
+      domain: foo.com
+      host: "@"
+      params: {}
+      multi_aware: true
+      multi_instance: true
+      provider_id: e.d.org
+      service_id: t1
+      unique_id: def
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - type: TXT
+          name: "@"
+          data: newdata
+          ttl: 500
+          _dc: {id: def, providerId: e.d.org, serviceId: t1, host: "@", essential: Always}
+        - type: TXT
+          name: "@"
+          data: olddata
+          ttl: 400          
+          _dc: {id: abc, providerId: e.d.org, serviceId: t1, host: "@", essential: Always}
+  - id: multi_different_template_cascade_delete
+    description: "Applying a different template cascades to delete all records from old template"
+    input:
+      zone_records:
+        - type: A
+          name: "@"
+          data: "127.0.0.1"
+          ttl: 400
+          _dc: {id: abc, providerId: e.d.org, serviceId: t1, host: "@", essential: Always}
+        - type: CNAME
+          name: www
+          data: "@"
+          ttl: 500
+          _dc: {id: abc, providerId: e.d.org, serviceId: t1, host: "@", essential: Always}
+      template_records:
+        - {type: A, host: "@", pointsTo: "127.0.0.2", ttl: 500}
+      domain: foo.com
+      host: "@"
+      params: {}
+      multi_aware: true
+      multi_instance: false
+      provider_id: e.d.org
+      service_id: t2
+      unique_id: def
+    expect:
+      new_count: 1
+      delete_count: 2
+      records:
+        - type: A
+          name: "@"
+          data: "127.0.0.2"
+          ttl: 500
+          _dc: {id: def, providerId: e.d.org, serviceId: t2, host: "@", essential: Always}
+
+  - id: multi_essential_blocks_delete
+    description: "Record with essential=Always is not deleted when a different template is applied"
+    input:
+      zone_records:
+        - type: A
+          name: "@"
+          data: "127.0.0.1"
+          ttl: 400
+          _dc: {id: abc, providerId: e.d.org, serviceId: t1, host: "@", essential: OnApply}
+        - type: CNAME
+          name: www
+          data: "@"
+          ttl: 500
+          _dc: {id: abc, providerId: e.d.org, serviceId: t1, host: "@", essential: Always}
+      template_records:
+        - {type: A, host: "@", pointsTo: "127.0.0.2", ttl: 500, essential: OnApply}
+      domain: foo.com
+      host: "@"
+      params: {}
+      multi_aware: true
+      multi_instance: false
+      provider_id: e.d.org
+      service_id: t2
+      unique_id: def
+    expect:
+      new_count: 1
+      delete_count: 1
+      records:
+        - type: A
+          name: "@"
+          data: "127.0.0.2"
+          ttl: 500
+          _dc: {id: def, providerId: e.d.org, serviceId: t2, host: "@", essential: OnApply}
+        - type: CNAME
+          name: www
+          data: "@"
+          ttl: 500
+          _dc: {id: abc, providerId: e.d.org, serviceId: t1, host: "@", essential: Always}
+
+  # ---------------------------------------------------------------------------
+  # Exception / validation
+  # ---------------------------------------------------------------------------
+  - id: exception_cname_at_apex
+    description: "CNAME at the apex raises InvalidData"
+    input:
+      zone_records: []
+      template_records:
+        - {type: CNAME, host: "@", pointsTo: foo.com, ttl: 400}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      exception: InvalidData
+
+  - id: exception_cname_empty_pointsto
+    description: "CNAME with empty pointsTo raises InvalidData"
+    input:
+      zone_records: []
+      template_records:
+        - {type: CNAME, host: foo, pointsTo: "", ttl: 600}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      exception: InvalidData
+
+  - id: exception_cname_empty_pointsto_from_variable
+    description: "CNAME with pointsTo resolved to empty string raises InvalidData"
+    input:
+      zone_records: []
+      template_records:
+        - {type: CNAME, host: foo, pointsTo: "%var%", ttl: 600}
+      domain: foo.com
+      host: ""
+      params: {var: ""}
+    expect:
+      exception: InvalidData
+
+  - id: exception_cname_empty_pointsto_missing_parameter
+    description: "CNAME with missing variable raises MissingParameter"
+    input:
+      zone_records: []
+      template_records:
+        - {type: CNAME, host: foo, pointsTo: "%var%", ttl: 600}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      exception: MissingParameter
+
+  - id: exception_cname_pointsto_too_long
+    description: "CNAME with pointsTo exceeding max DNS name length raises InvalidData"
+    input:
+      zone_records: []
+      template_records:
+        - type: CNAME
+          host: foo
+          # 255+ char name
+          pointsTo: "0123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.com"
+          ttl: 600
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      exception: InvalidData
+
+  - id: exception_cname_pointsto_label_too_long
+    description: "CNAME with a single label > 63 chars raises InvalidData"
+    input:
+      zone_records: []
+      template_records:
+        - type: CNAME
+          host: foo
+          pointsTo: "0123456789.0123456789012345678901234567890123456789012345678901234567890123456789.com"
+          ttl: 600
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      exception: InvalidData
+
+  - id: exception_cname_host_too_long
+    description: "CNAME with host exceeding max DNS name length raises InvalidData"
+    input:
+      zone_records: []
+      template_records:
+        - type: CNAME
+          host: "0123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.com"
+          pointsTo: bar.com
+          ttl: 600
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      exception: InvalidData
+
+  - id: exception_cname_trailing_dot_in_host
+    description: "CNAME with trailing dot in host raises InvalidData"
+    input:
+      zone_records: []
+      template_records:
+        - {type: CNAME, host: "foo.", pointsTo: bar.com, ttl: 600}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      exception: InvalidData
+
+  - id: exception_a_trailing_dot_in_host
+    description: "A record with trailing dot in host raises InvalidData"
+    input:
+      zone_records: []
+      template_records:
+        - {type: A, host: "foo.", pointsTo: "127.0.0.1", ttl: 600}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      exception: InvalidData
+
+  - id: exception_a_host_too_long
+    description: "A record with host exceeding max DNS name length raises InvalidData"
+    input:
+      zone_records: []
+      template_records:
+        - type: A
+          host: "0123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.com"
+          pointsTo: "127.0.0.1"
+          ttl: 600
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      exception: InvalidData
+
+  - id: exception_aaaa_trailing_dot_in_host
+    description: "AAAA record with trailing dot in host raises InvalidData"
+    input:
+      zone_records: []
+      template_records:
+        - {type: AAAA, host: "foo.", pointsTo: "::1", ttl: 600}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      exception: InvalidData
+
+  - id: exception_aaaa_host_too_long
+    description: "AAAA record with host exceeding max DNS name length raises InvalidData"
+    input:
+      zone_records: []
+      template_records:
+        - type: AAAA
+          host: "0123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.com"
+          pointsTo: "::1"
+          ttl: 600
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      exception: InvalidData
+
+  - id: exception_srv_host_too_long
+    description: "SRV record with host exceeding max DNS name length raises InvalidData"
+    input:
+      zone_records: []
+      template_records:
+        - type: SRV
+          name: "1223456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789.123456789"
+          target: "127.0.0.1"
+          protocol: UDP
+          service: foo.com
+          priority: 10
+          weight: 10
+          port: 5
+          ttl: 400
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      exception: InvalidData
+
+  - id: exception_srv_host_trailing_dot
+    description: "SRV record with trailing dot in host raises InvalidData"
+    input:
+      zone_records: []
+      template_records:
+        - {type: SRV, name: "foo.", target: "127.0.0.1", protocol: UDP, service: foo.com, priority: 10, weight: 10, port: 5, ttl: 400}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      exception: InvalidData
+
+  - id: exception_srv_at_on_apex
+    description: "SRV with @ name at apex (no host) raises InvalidData"
+    input:
+      zone_records: []
+      template_records:
+        - {type: SRV, name: "@", target: "127.0.0.1", protocol: UDP, service: foo.com, priority: 10, weight: 10, port: 5, ttl: 400}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      exception: InvalidData
+
+  - id: exception_a_empty_pointsto
+    description: "A record with empty pointsTo raises InvalidData"
+    input:
+      zone_records: []
+      template_records:
+        - {type: A, host: "@", pointsTo: "", ttl: 600}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      exception: InvalidData
+
+  - id: exception_a_incorrect_ip
+    description: "A record with non-IP pointsTo raises InvalidData"
+    input:
+      zone_records: []
+      template_records:
+        - {type: A, host: "@", pointsTo: "%ip%", ttl: 600}
+      domain: foo.com
+      host: ""
+      params: {ip: foo.com}
+    expect:
+      exception: InvalidData
+
+  - id: exception_aaaa_ipv4_mismatch
+    description: "AAAA record with IPv4 address raises InvalidData"
+    input:
+      zone_records: []
+      template_records:
+        - {type: AAAA, host: "@", pointsTo: "127.0.0.1", ttl: 600}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      exception: InvalidData
+
+  - id: exception_a_ipv6_mismatch
+    description: "A record with IPv6 address raises InvalidData"
+    input:
+      zone_records: []
+      template_records:
+        - {type: A, host: "@", pointsTo: "::1", ttl: 600}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      exception: InvalidData
+
+  - id: exception_invalid_record_type
+    description: "An entirely invalid record type string raises TypeError"
+    input:
+      zone_records: []
+      template_records:
+        - {type: "!INVALID", host: "@", data: xxx, ttl: 600}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      exception: TypeError
+
+  - id: exception_variable_not_closed
+    description: "An unclosed %variable raises InvalidTemplate"
+    input:
+      zone_records: []
+      template_records:
+        - {type: TXT, host: "@", data: "%var", ttl: 600}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      exception: InvalidTemplate
+
+  - id: spfm_underscore_host
+    description: "SPFM with leading-underscore host is allowed"
+    input:
+      zone_records: []
+      template_records:
+        - {type: SPFM, host: "_underscore", spfRules: foo}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: TXT, name: "_underscore", data: "v=spf1 foo ~all", ttl: 6000}
+
+  # ---------------------------------------------------------------------------
+  # Underscore in host — all core record types
+  # ---------------------------------------------------------------------------
+  - id: a_underscore_leading_host
+    description: "A record with leading underscore in host is allowed"
+    input:
+      zone_records: []
+      template_records:
+        - {type: A, host: "_verify", pointsTo: 1.2.3.4, ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: A, name: "_verify", data: 1.2.3.4, ttl: 300}
+
+  - id: a_underscore_middle_host
+    description: "A record with underscore in the middle of host is allowed"
+    input:
+      zone_records: []
+      template_records:
+        - {type: A, host: "tinkermail_verify", pointsTo: 1.2.3.4, ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: A, name: "tinkermail_verify", data: 1.2.3.4, ttl: 300}
+
+  - id: aaaa_underscore_leading_host
+    description: "AAAA record with leading underscore in host is allowed"
+    input:
+      zone_records: []
+      template_records:
+        - {type: AAAA, host: "_verify", pointsTo: "::1", ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: AAAA, name: "_verify", data: "::1", ttl: 300}
+
+  - id: aaaa_underscore_middle_host
+    description: "AAAA record with underscore in the middle of host is allowed"
+    input:
+      zone_records: []
+      template_records:
+        - {type: AAAA, host: "tinkermail_verify", pointsTo: "::1", ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: AAAA, name: "tinkermail_verify", data: "::1", ttl: 300}
+
+  - id: mx_underscore_leading_host
+    description: "MX record with leading underscore in host is allowed"
+    input:
+      zone_records: []
+      template_records:
+        - {type: MX, host: "_mail", pointsTo: mx.example.com, ttl: 300, priority: 10}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: MX, name: "_mail", data: mx.example.com, ttl: 300, priority: 10}
+
+  - id: mx_underscore_middle_host
+    description: "MX record with underscore in the middle of host is allowed"
+    input:
+      zone_records: []
+      template_records:
+        - {type: MX, host: "sub_domain", pointsTo: mx.example.com, ttl: 300, priority: 10}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: MX, name: "sub_domain", data: mx.example.com, ttl: 300, priority: 10}
+
+  - id: cname_underscore_leading_host
+    description: "CNAME record with leading underscore in host is allowed"
+    input:
+      zone_records: []
+      template_records:
+        - {type: CNAME, host: "_verify", pointsTo: target.example.com, ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: CNAME, name: "_verify", data: target.example.com, ttl: 300}
+
+  - id: cname_underscore_middle_host
+    description: "CNAME record with underscore in the middle of host is allowed"
+    input:
+      zone_records: []
+      template_records:
+        - {type: CNAME, host: "tinkermail_verify", pointsTo: target.example.com, ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: CNAME, name: "tinkermail_verify", data: target.example.com, ttl: 300}
+
+  - id: ns_underscore_leading_host
+    description: "NS record with leading underscore in host is allowed"
+    input:
+      zone_records: []
+      template_records:
+        - {type: NS, host: "_sub", pointsTo: ns.example.com, ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: NS, name: "_sub", data: ns.example.com, ttl: 300}
+
+  - id: ns_underscore_middle_host
+    description: "NS record with underscore in the middle of host is allowed"
+    input:
+      zone_records: []
+      template_records:
+        - {type: NS, host: "sub_zone", pointsTo: ns.example.com, ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: NS, name: "sub_zone", data: ns.example.com, ttl: 300}
+
+  - id: txt_underscore_middle_host
+    description: "TXT record with underscore in the middle of host is allowed"
+    input:
+      zone_records: []
+      template_records:
+        - {type: TXT, host: "tinkermail_verify", data: somevalue, ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: TXT, name: "tinkermail_verify", data: somevalue, ttl: 300}
+
+  - id: spfm_underscore_middle_host
+    description: "SPFM with underscore in the middle of host is allowed"
+    input:
+      zone_records: []
+      template_records:
+        - {type: SPFM, host: "mail_sub", spfRules: foo}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: TXT, name: "mail_sub", data: "v=spf1 foo ~all", ttl: 6000}
+
+  - id: srv_underscore_middle_name
+    description: "SRV record with underscore in the middle of name is allowed"
+    input:
+      zone_records: []
+      template_records:
+        - {type: SRV, name: "_sip_old", target: "127.0.0.1", protocol: UDP, service: foo.com,
+           priority: 10, weight: 10, port: 5, ttl: 400}
+      domain: foo.com
+      host: bar
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: SRV, name: "_sip_old.bar", data: "127.0.0.1", protocol: udp, service: foo.com,
+           priority: 10, weight: 10, port: 5, ttl: 400}
+
+  - id: exception_txt_host_with_space
+    description: "TXT with a host containing a space raises InvalidData"
+    input:
+      zone_records: []
+      template_records:
+        - {type: TXT, host: "with space", data: foo}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      exception: InvalidData
+
+  - id: exception_srv_invalid_service_host
+    description: "SRV with spaces in service host raises InvalidData"
+    input:
+      zone_records: []
+      template_records:
+        - {type: SRV, name: _abc, target: "127.0.0.1", protocol: UDP, service: "this is invalid host",
+           priority: 10, weight: 10, port: 5, ttl: 400}
+      domain: foo.com
+      host: bar
+      params: {}
+    expect:
+      exception: InvalidData
+
+  - id: exception_srv_invalid_target_host
+    description: "SRV with spaces in target raises InvalidData"
+    input:
+      zone_records: []
+      template_records:
+        - {type: SRV, name: _abc, target: "this is invalid", protocol: UDP, service: foo.com,
+           priority: 10, weight: 10, port: 5, ttl: 400}
+      domain: foo.com
+      host: bar
+      params: {}
+    expect:
+      exception: InvalidData
+
+  - id: exception_srv_invalid_protocol
+    description: "SRV with an unrecognised protocol raises InvalidData"
+    input:
+      zone_records: []
+      template_records:
+        - {type: SRV, name: _abc, target: "127.0.0.1", protocol: bla, service: foo.com,
+           priority: 10, weight: 10, port: 5, ttl: 400}
+      domain: foo.com
+      host: bar
+      params: {}
+    expect:
+      exception: InvalidData
+
+  # ---------------------------------------------------------------------------
+  # Custom record types (CAA, TYPE<N>, etc.)
+  # ---------------------------------------------------------------------------
+  - id: custom_caa_add
+    description: "Custom CAA record is added without conflict deletion"
+    input:
+      zone_records: []
+      template_records:
+        - {type: CAA, host: "@", data: '0 issue "letsencrypt.org"', ttl: 3600}
+      domain: foo.com
+      host: bar
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: CAA, name: bar, data: '0 issue "letsencrypt.org"', ttl: 3600}
+
+  - id: custom_caa_no_conflict_delete
+    description: "Applying a custom record does NOT delete existing records of the same type/host"
+    input:
+      zone_records:
+        - {type: CAA, name: bar,   data: '0 issue "old.com"', ttl: 300}
+        - {type: CAA, name: other, data: '0 issue "old.com"', ttl: 300}
+      template_records:
+        - {type: CAA, host: "@", data: '0 issue "new.com"', ttl: 3600}
+      domain: foo.com
+      host: bar
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: CAA, name: bar,   data: '0 issue "new.com"', ttl: 3600}
+        - {type: CAA, name: bar,   data: '0 issue "old.com"', ttl: 300}
+        - {type: CAA, name: other, data: '0 issue "old.com"', ttl: 300}
+
+  - id: custom_caa_variable_substitution
+    description: "Custom record type supports %variable% substitution in data"
+    input:
+      zone_records: []
+      template_records:
+        - {type: CAA, host: "@", data: '0 issue "%issuer%"', ttl: 3600}
+      domain: foo.com
+      host: bar
+      params: {issuer: example.com}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: CAA, name: bar, data: '0 issue "example.com"', ttl: 3600}
+
+  - id: custom_caa_data_at_raises_invalid_data
+    description: "@ in custom record data raises InvalidData — @ resolution is not supported for custom types"
+    input:
+      zone_records: []
+      template_records:
+        - {type: CAA, host: "@", data: "@", ttl: 3600}
+      domain: foo.com
+      host: bar
+      params: {}
+    expect:
+      exception: InvalidData
+
+  - id: custom_type256_rfc3597
+    description: "TYPE<N> syntax (RFC 3597) is accepted as a custom record type"
+    input:
+      zone_records: []
+      template_records:
+        - {type: TYPE256, host: "@", data: "\\# 4 c0000201", ttl: 3600}
+      domain: foo.com
+      host: bar
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: TYPE256, name: bar, data: "\\# 4 c0000201", ttl: 3600}
+
+  - id: exception_custom_invalid_type_rejected
+    description: "A completely invalid record type string raises TypeError"
+    input:
+      zone_records: []
+      template_records:
+        - {type: "!INVALID", host: "@", data: something, ttl: 3600}
+      domain: foo.com
+      host: bar
+      params: {}
+    expect:
+      exception: TypeError
+
+  - id: exception_custom_invalid_host
+    description: "Custom record with an invalid host raises InvalidData"
+    input:
+      zone_records: []
+      template_records:
+        - {type: CAA, host: "-invalid-", data: '0 issue "ca.com"', ttl: 3600}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      exception: InvalidData
+
+  - id: exception_custom_empty_data
+    description: "Custom record with empty data field raises InvalidData"
+    input:
+      zone_records: []
+      template_records:
+        - {type: CAA, host: "@", data: "", ttl: 3600}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      exception: InvalidData
+
+  - id: exception_spfm_invalid_host
+    description: "SPFM with an invalid host (hyphen-leading label) raises InvalidData"
+    input:
+      zone_records: []
+      template_records:
+        - {type: SPFM, host: "-invalid", spfRules: foo}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      exception: InvalidData
+
+  # ---------------------------------------------------------------------------
+  # Wildcard host support
+  # ---------------------------------------------------------------------------
+  - id: cname_wildcard_bare_no_host
+    description: "CNAME with bare '*' host at apex adds wildcard record"
+    input:
+      zone_records: []
+      template_records:
+        - {type: CNAME, host: "*", pointsTo: target.example.com, ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: CNAME, name: "*", data: target.example.com, ttl: 300}
+
+  - id: cname_wildcard_bare_with_host
+    description: "CNAME with bare '*' host applied under a sub-host becomes '*.sub'"
+    input:
+      zone_records: []
+      template_records:
+        - {type: CNAME, host: "*", pointsTo: target.example.com, ttl: 300}
+      domain: foo.com
+      host: bar
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: CNAME, name: "*.bar", data: target.example.com, ttl: 300}
+
+  - id: cname_wildcard_with_sub_no_host
+    description: "CNAME with '*.sub' host at apex adds '*.sub' record"
+    input:
+      zone_records: []
+      template_records:
+        - {type: CNAME, host: "*.sub", pointsTo: target.example.com, ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: CNAME, name: "*.sub", data: target.example.com, ttl: 300}
+
+  - id: cname_wildcard_with_sub_and_host
+    description: "CNAME with '*.sub' host applied under 'bar' becomes '*.sub.bar'"
+    input:
+      zone_records: []
+      template_records:
+        - {type: CNAME, host: "*.sub", pointsTo: target.example.com, ttl: 300}
+      domain: foo.com
+      host: bar
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: CNAME, name: "*.sub.bar", data: target.example.com, ttl: 300}
+
+  - id: a_wildcard_bare_no_host
+    description: "A record with bare '*' host at apex adds wildcard record"
+    input:
+      zone_records: []
+      template_records:
+        - {type: A, host: "*", pointsTo: 1.2.3.4, ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: A, name: "*", data: 1.2.3.4, ttl: 300}
+
+  - id: a_wildcard_bare_with_host
+    description: "A record with bare '*' host applied under 'bar' becomes '*.bar'"
+    input:
+      zone_records: []
+      template_records:
+        - {type: A, host: "*", pointsTo: 1.2.3.4, ttl: 300}
+      domain: foo.com
+      host: bar
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: A, name: "*.bar", data: 1.2.3.4, ttl: 300}
+
+  - id: cname_wildcard_variable_pointsto
+    description: "CNAME wildcard host with variable in pointsTo resolves correctly"
+    input:
+      zone_records: []
+      template_records:
+        - {type: CNAME, host: "*", pointsTo: "%prefix%.hav.sh", ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {prefix: myserver}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: CNAME, name: "*", data: myserver.hav.sh, ttl: 300}
+
+  - id: cname_wildcard_fqdn_equals_domain
+    description: "Wildcard FQDN host '*.foo.com.' resolves to '*' at apex (line 212-213)"
+    input:
+      zone_records: []
+      template_records:
+        - {type: CNAME, host: "*.foo.com.", pointsTo: target.example.com, ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: CNAME, name: "*", data: target.example.com, ttl: 300}
+
+  - id: cname_wildcard_fqdn_subdomain
+    description: "Wildcard FQDN host '*.sub.foo.com.' trims domain suffix to '*.sub' (line 214-215)"
+    input:
+      zone_records: []
+      template_records:
+        - {type: CNAME, host: "*.sub.foo.com.", pointsTo: target.example.com, ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: CNAME, name: "*.sub", data: target.example.com, ttl: 300}
+
+  - id: aaaa_wildcard_bare_no_host
+    description: "AAAA record with bare '*' host at apex adds wildcard record"
+    input:
+      zone_records: []
+      template_records:
+        - {type: AAAA, host: "*", pointsTo: "::1", ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: AAAA, name: "*", data: "::1", ttl: 300}
+
+  - id: aaaa_wildcard_bare_with_host
+    description: "AAAA record with bare '*' host applied under 'bar' becomes '*.bar'"
+    input:
+      zone_records: []
+      template_records:
+        - {type: AAAA, host: "*", pointsTo: "::1", ttl: 300}
+      domain: foo.com
+      host: bar
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: AAAA, name: "*.bar", data: "::1", ttl: 300}
+
+  - id: txt_wildcard_bare_no_host
+    description: "TXT record with bare '*' host at apex adds wildcard record"
+    input:
+      zone_records: []
+      template_records:
+        - {type: TXT, host: "*", data: "v=spf1 include:example.com ~all", ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: TXT, name: "*", data: "v=spf1 include:example.com ~all", ttl: 300}
+
+  - id: txt_wildcard_bare_with_host
+    description: "TXT record with bare '*' host applied under 'bar' becomes '*.bar'"
+    input:
+      zone_records: []
+      template_records:
+        - {type: TXT, host: "*", data: "v=spf1 include:example.com ~all", ttl: 300}
+      domain: foo.com
+      host: bar
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: TXT, name: "*.bar", data: "v=spf1 include:example.com ~all", ttl: 300}
+
+  - id: mx_wildcard_bare_no_host
+    description: "MX record with bare '*' host at apex adds wildcard record"
+    input:
+      zone_records: []
+      template_records:
+        - {type: MX, host: "*", pointsTo: mail.example.com, priority: 10, ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: MX, name: "*", data: mail.example.com, priority: 10, ttl: 300}
+
+  - id: mx_wildcard_bare_with_host
+    description: "MX record with bare '*' host applied under 'bar' becomes '*.bar'"
+    input:
+      zone_records: []
+      template_records:
+        - {type: MX, host: "*", pointsTo: mail.example.com, priority: 10, ttl: 300}
+      domain: foo.com
+      host: bar
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: MX, name: "*.bar", data: mail.example.com, priority: 10, ttl: 300}
+
+  - id: ns_wildcard_bare_no_host
+    description: "NS record with bare '*' host at apex adds wildcard record"
+    input:
+      zone_records: []
+      template_records:
+        - {type: NS, host: "*", pointsTo: ns.example.com, ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: NS, name: "*", data: ns.example.com, ttl: 300}
+
+  - id: ns_wildcard_bare_with_host
+    description: "NS record with bare '*' host applied under 'bar' becomes '*.bar'"
+    input:
+      zone_records: []
+      template_records:
+        - {type: NS, host: "*", pointsTo: ns.example.com, ttl: 300}
+      domain: foo.com
+      host: bar
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: NS, name: "*.bar", data: ns.example.com, ttl: 300}
+
+  - id: spfm_wildcard_bare_no_host
+    description: "SPFM record with bare '*' host at apex adds wildcard record"
+    input:
+      zone_records: []
+      template_records:
+        - {type: SPFM, host: "*", spfRules: "include:example.com"}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: TXT, name: "*", data: "v=spf1 include:example.com ~all", ttl: 6000}
+
+  - id: spfm_wildcard_bare_with_host
+    description: "SPFM record with bare '*' host applied under 'bar' becomes '*.bar'"
+    input:
+      zone_records: []
+      template_records:
+        - {type: SPFM, host: "*", spfRules: "include:example.com"}
+      domain: foo.com
+      host: bar
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: TXT, name: "*.bar", data: "v=spf1 include:example.com ~all", ttl: 6000}
+
+  - id: exception_wildcard_not_leftmost
+    description: "Wildcard '*' in non-leftmost position raises InvalidData"
+    input:
+      zone_records: []
+      template_records:
+        - {type: A, host: "foo.*", pointsTo: 1.2.3.4, ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      exception: InvalidData
+
+  - id: exception_wildcard_middle_label
+    description: "Wildcard in a middle label like '_bar.*.foo' raises InvalidData"
+    input:
+      zone_records: []
+      template_records:
+        - {type: A, host: "_bar.*.foo", pointsTo: 1.2.3.4, ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      exception: InvalidData
+
+  - id: exception_wildcard_dot_star
+    description: "Host '*.*' (two wildcards / wildcard label) raises InvalidData"
+    input:
+      zone_records: []
+      template_records:
+        - {type: A, host: "*.*", pointsTo: 1.2.3.4, ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      exception: InvalidData
+
+  - id: exception_wildcard_dot_at
+    description: "Host '*.@' is syntactically invalid and raises InvalidData"
+    input:
+      zone_records: []
+      template_records:
+        - {type: A, host: "*.@", pointsTo: 1.2.3.4, ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      exception: InvalidData
+
+  - id: NS_conflict_itself_a_before_ns
+    description: "NS conflicts with A already added to new records (A first, NS second)"
+    input:
+      zone_records: []
+      template_records:
+        - {type: A, host: "%sub%", pointsTo: 192.168.1.1, ttl: 600}
+        - {type: NS, host: "%sub%", pointsTo: ns.example.com, ttl: 600}
+      domain: foo.com
+      host: ""
+      params: {sub: blah}
+    expect:
+      exception: InvalidData
+
+  # ---------------------------------------------------------------------------
+  # TTL, priority, weight, port as strings and single-variable expressions
+  # ---------------------------------------------------------------------------
+
+  - id: ttl_as_string_a
+    description: "A record with ttl supplied as a string renders as int"
+    input:
+      zone_records: []
+      template_records:
+        - {type: A, host: "@", pointsTo: "1.2.3.4", ttl: "300"}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: A, name: "@", data: "1.2.3.4", ttl: 300}
+
+  - id: ttl_as_variable_a
+    description: "A record with ttl supplied as a single %variable% renders as int"
+    input:
+      zone_records: []
+      template_records:
+        - {type: A, host: "@", pointsTo: "1.2.3.4", ttl: "%myttl%"}
+      domain: foo.com
+      host: ""
+      params: {myttl: "600"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: A, name: "@", data: "1.2.3.4", ttl: 600}
+
+  - id: ttl_as_string_mx
+    description: "MX record with ttl supplied as a string renders as int"
+    input:
+      zone_records: []
+      template_records:
+        - {type: MX, host: "@", pointsTo: "mail.example.com", ttl: "400", priority: 10}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: MX, name: "@", data: "mail.example.com", ttl: 400, priority: 10}
+
+  - id: ttl_as_variable_mx
+    description: "MX record with ttl supplied as a single %variable% renders as int"
+    input:
+      zone_records: []
+      template_records:
+        - {type: MX, host: "@", pointsTo: "mail.example.com", ttl: "%myttl%", priority: 10}
+      domain: foo.com
+      host: ""
+      params: {myttl: "400"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: MX, name: "@", data: "mail.example.com", ttl: 400, priority: 10}
+
+  - id: mx_priority_as_string
+    description: "MX record with priority supplied as a string renders as int"
+    input:
+      zone_records: []
+      template_records:
+        - {type: MX, host: "@", pointsTo: "mail.example.com", ttl: 400, priority: "20"}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: MX, name: "@", data: "mail.example.com", ttl: 400, priority: 20}
+
+  - id: mx_priority_as_variable
+    description: "MX record with priority supplied as a single %variable% renders as int"
+    input:
+      zone_records: []
+      template_records:
+        - {type: MX, host: "@", pointsTo: "mail.example.com", ttl: 400, priority: "%prio%"}
+      domain: foo.com
+      host: ""
+      params: {prio: "30"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: MX, name: "@", data: "mail.example.com", ttl: 400, priority: 30}
+
+  - id: ttl_as_string_srv
+    description: "SRV record with ttl supplied as a string renders as int"
+    input:
+      zone_records: []
+      template_records:
+        - {type: SRV, name: "_sip", target: "sip.example.com", protocol: UDP,
+           service: "sip.example.com", priority: 10, weight: 20, port: 5060, ttl: "500"}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: SRV, name: "_sip", data: "sip.example.com", protocol: udp,
+           service: "sip.example.com", priority: 10, weight: 20, port: 5060, ttl: 500}
+
+  - id: ttl_as_variable_srv
+    description: "SRV record with ttl supplied as a single %variable% renders as int"
+    input:
+      zone_records: []
+      template_records:
+        - {type: SRV, name: "_sip", target: "sip.example.com", protocol: UDP,
+           service: "sip.example.com", priority: 10, weight: 20, port: 5060, ttl: "%myttl%"}
+      domain: foo.com
+      host: ""
+      params: {myttl: "500"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: SRV, name: "_sip", data: "sip.example.com", protocol: udp,
+           service: "sip.example.com", priority: 10, weight: 20, port: 5060, ttl: 500}
+
+  - id: srv_priority_as_string
+    description: "SRV record with priority supplied as a string renders as int"
+    input:
+      zone_records: []
+      template_records:
+        - {type: SRV, name: "_sip", target: "sip.example.com", protocol: UDP,
+           service: "sip.example.com", priority: "10", weight: 20, port: 5060, ttl: 400}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: SRV, name: "_sip", data: "sip.example.com", protocol: udp,
+           service: "sip.example.com", priority: 10, weight: 20, port: 5060, ttl: 400}
+
+  - id: srv_priority_as_variable
+    description: "SRV record with priority supplied as a single %variable% renders as int"
+    input:
+      zone_records: []
+      template_records:
+        - {type: SRV, name: "_sip", target: "sip.example.com", protocol: UDP,
+           service: "sip.example.com", priority: "%prio%", weight: 20, port: 5060, ttl: 400}
+      domain: foo.com
+      host: ""
+      params: {prio: "10"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: SRV, name: "_sip", data: "sip.example.com", protocol: udp,
+           service: "sip.example.com", priority: 10, weight: 20, port: 5060, ttl: 400}
+
+  - id: srv_weight_as_string
+    description: "SRV record with weight supplied as a string renders as int"
+    input:
+      zone_records: []
+      template_records:
+        - {type: SRV, name: "_sip", target: "sip.example.com", protocol: UDP,
+           service: "sip.example.com", priority: 10, weight: "20", port: 5060, ttl: 400}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: SRV, name: "_sip", data: "sip.example.com", protocol: udp,
+           service: "sip.example.com", priority: 10, weight: 20, port: 5060, ttl: 400}
+
+  - id: srv_weight_as_variable
+    description: "SRV record with weight supplied as a single %variable% renders as int"
+    input:
+      zone_records: []
+      template_records:
+        - {type: SRV, name: "_sip", target: "sip.example.com", protocol: UDP,
+           service: "sip.example.com", priority: 10, weight: "%w%", port: 5060, ttl: 400}
+      domain: foo.com
+      host: ""
+      params: {w: "20"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: SRV, name: "_sip", data: "sip.example.com", protocol: udp,
+           service: "sip.example.com", priority: 10, weight: 20, port: 5060, ttl: 400}
+
+  - id: srv_port_as_string
+    description: "SRV record with port supplied as a string renders as int"
+    input:
+      zone_records: []
+      template_records:
+        - {type: SRV, name: "_sip", target: "sip.example.com", protocol: UDP,
+           service: "sip.example.com", priority: 10, weight: 20, port: "5060", ttl: 400}
+      domain: foo.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: SRV, name: "_sip", data: "sip.example.com", protocol: udp,
+           service: "sip.example.com", priority: 10, weight: 20, port: 5060, ttl: 400}
+
+  - id: srv_port_as_variable
+    description: "SRV record with port supplied as a single %variable% renders as int"
+    input:
+      zone_records: []
+      template_records:
+        - {type: SRV, name: "_sip", target: "sip.example.com", protocol: UDP,
+           service: "sip.example.com", priority: 10, weight: 20, port: "%port%", ttl: 400}
+      domain: foo.com
+      host: ""
+      params: {port: "5060"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: SRV, name: "_sip", data: "sip.example.com", protocol: udp,
+           service: "sip.example.com", priority: 10, weight: 20, port: 5060, ttl: 400}
+
+  # ---------------------------------------------------------------------------
+  # Negative: int fields (ttl, priority, weight, port) must be a plain integer
+  # or exactly one %variable% token — no constant parts mixed in, no two vars
+  # ---------------------------------------------------------------------------
+
+  - id: ttl_two_vars_invalid
+    description: "ttl with two adjacent %variables% is rejected (InvalidData)"
+    input:
+      zone_records: []
+      template_records:
+        - {type: A, host: "@", pointsTo: "1.2.3.4", ttl: "%a%%b%"}
+      domain: foo.com
+      host: ""
+      params: {a: "30", b: "0"}
+    expect:
+      exception: InvalidData
+
+  - id: ttl_const_prefix_invalid
+    description: "ttl with a constant prefix before a variable is rejected (InvalidData)"
+    input:
+      zone_records: []
+      template_records:
+        - {type: A, host: "@", pointsTo: "1.2.3.4", ttl: "1%v%"}
+      domain: foo.com
+      host: ""
+      params: {v: "00"}
+    expect:
+      exception: InvalidData
+
+  - id: ttl_const_suffix_invalid
+    description: "ttl with a constant suffix after a variable is rejected (InvalidData)"
+    input:
+      zone_records: []
+      template_records:
+        - {type: A, host: "@", pointsTo: "1.2.3.4", ttl: "%v%0"}
+      domain: foo.com
+      host: ""
+      params: {v: "30"}
+    expect:
+      exception: InvalidData
+
+  - id: mx_priority_two_vars_invalid
+    description: "MX priority with two adjacent %variables% is rejected (InvalidData)"
+    input:
+      zone_records: []
+      template_records:
+        - {type: MX, host: "@", pointsTo: "mail.example.com", ttl: 400, priority: "%a%%b%"}
+      domain: foo.com
+      host: ""
+      params: {a: "1", b: "0"}
+    expect:
+      exception: InvalidData
+
+  - id: mx_priority_const_prefix_invalid
+    description: "MX priority with a constant prefix before a variable is rejected (InvalidData)"
+    input:
+      zone_records: []
+      template_records:
+        - {type: MX, host: "@", pointsTo: "mail.example.com", ttl: 400, priority: "1%v%"}
+      domain: foo.com
+      host: ""
+      params: {v: "0"}
+    expect:
+      exception: InvalidData
+
+  - id: mx_priority_const_suffix_invalid
+    description: "MX priority with a constant suffix after a variable is rejected (InvalidData)"
+    input:
+      zone_records: []
+      template_records:
+        - {type: MX, host: "@", pointsTo: "mail.example.com", ttl: 400, priority: "%v%0"}
+      domain: foo.com
+      host: ""
+      params: {v: "1"}
+    expect:
+      exception: InvalidData
+
+  - id: srv_priority_two_vars_invalid
+    description: "SRV priority with two adjacent %variables% is rejected (InvalidData)"
+    input:
+      zone_records: []
+      template_records:
+        - {type: SRV, name: "_sip", target: "sip.example.com", protocol: UDP,
+           service: "sip.example.com", priority: "%a%%b%", weight: 20, port: 5060, ttl: 400}
+      domain: foo.com
+      host: ""
+      params: {a: "1", b: "0"}
+    expect:
+      exception: InvalidData
+
+  - id: srv_priority_const_prefix_invalid
+    description: "SRV priority with a constant prefix before a variable is rejected (InvalidData)"
+    input:
+      zone_records: []
+      template_records:
+        - {type: SRV, name: "_sip", target: "sip.example.com", protocol: UDP,
+           service: "sip.example.com", priority: "1%v%", weight: 20, port: 5060, ttl: 400}
+      domain: foo.com
+      host: ""
+      params: {v: "0"}
+    expect:
+      exception: InvalidData
+
+  - id: srv_weight_two_vars_invalid
+    description: "SRV weight with two adjacent %variables% is rejected (InvalidData)"
+    input:
+      zone_records: []
+      template_records:
+        - {type: SRV, name: "_sip", target: "sip.example.com", protocol: UDP,
+           service: "sip.example.com", priority: 10, weight: "%a%%b%", port: 5060, ttl: 400}
+      domain: foo.com
+      host: ""
+      params: {a: "2", b: "0"}
+    expect:
+      exception: InvalidData
+
+  - id: srv_weight_const_suffix_invalid
+    description: "SRV weight with a constant suffix after a variable is rejected (InvalidData)"
+    input:
+      zone_records: []
+      template_records:
+        - {type: SRV, name: "_sip", target: "sip.example.com", protocol: UDP,
+           service: "sip.example.com", priority: 10, weight: "%v%0", port: 5060, ttl: 400}
+      domain: foo.com
+      host: ""
+      params: {v: "2"}
+    expect:
+      exception: InvalidData
+
+  - id: srv_port_two_vars_invalid
+    description: "SRV port with two adjacent %variables% is rejected (InvalidData)"
+    input:
+      zone_records: []
+      template_records:
+        - {type: SRV, name: "_sip", target: "sip.example.com", protocol: UDP,
+           service: "sip.example.com", priority: 10, weight: 20, port: "%a%%b%", ttl: 400}
+      domain: foo.com
+      host: ""
+      params: {a: "50", b: "60"}
+    expect:
+      exception: InvalidData
+
+  - id: srv_port_const_prefix_invalid
+    description: "SRV port with a constant prefix before a variable is rejected (InvalidData)"
+    input:
+      zone_records: []
+      template_records:
+        - {type: SRV, name: "_sip", target: "sip.example.com", protocol: UDP,
+           service: "sip.example.com", priority: 10, weight: 20, port: "1%v%", ttl: 400}
+      domain: foo.com
+      host: ""
+      params: {v: "0"}
+    expect:
+      exception: InvalidData
+
+  - id: txt_data_two_adjacent_vars
+    description: "TXT data with two adjacent %variables% (%a%%b%) concatenates both values"
+    input:
+      zone_records: []
+      template_records:
+        - {type: TXT, host: "@", data: "%a%%b%", ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {a: "hello", b: "world"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: TXT, name: "@", data: "helloworld", ttl: 300}
+
+  # ---------------------------------------------------------------------------
+  # Variable in host field — empty / dot / underscore values
+  # Tested for every RR type (A, AAAA, CNAME, TXT, MX, NS, SRV, custom CAA).
+  #
+  # Pattern 1 — host: "%var%"
+  #   var=''          → apex (@)  [CNAME: apex is invalid → InvalidData]
+  #   var='sub'       → simple subdomain
+  #   var='child.sub' → multi-label (dot in value)
+  #   var='_dkim'     → underscore label
+  #
+  # Pattern 2 — host: "%var%.subdomain"  (SRV: name: "%var%._tcp")
+  #   var=''          → empty leading label → InvalidData
+  #   var='sub'       → sub.subdomain
+  #   var='child.sub' → child.sub.subdomain
+  #   var='_dkim'     → _dkim.subdomain
+  # ---------------------------------------------------------------------------
+
+  # --- A ---
+  - id: param_var_in_host_a_empty_resolves_to_apex
+    description: "A: host '%var%' with var='' resolves to apex (@)"
+    input:
+      zone_records: []
+      template_records:
+        - {type: A, host: "%var%", pointsTo: "127.0.0.1", ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: ""}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: A, name: "@", data: "127.0.0.1", ttl: 300}
+
+  - id: param_var_in_host_a_simple
+    description: "A: host '%var%' with a simple label produces a subdomain"
+    input:
+      zone_records: []
+      template_records:
+        - {type: A, host: "%var%", pointsTo: "127.0.0.1", ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: "sub"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: A, name: "sub", data: "127.0.0.1", ttl: 300}
+
+  - id: param_var_in_host_a_dotted
+    description: "A: host '%var%' with a multi-label value (dot in var) produces nested subdomain"
+    input:
+      zone_records: []
+      template_records:
+        - {type: A, host: "%var%", pointsTo: "127.0.0.1", ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: "child.sub"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: A, name: "child.sub", data: "127.0.0.1", ttl: 300}
+
+  - id: param_var_in_host_a_underscore
+    description: "A: host '%var%' with an underscore label is accepted"
+    input:
+      zone_records: []
+      template_records:
+        - {type: A, host: "%var%", pointsTo: "127.0.0.1", ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: "_dkim"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: A, name: "_dkim", data: "127.0.0.1", ttl: 300}
+
+  - id: param_var_prefix_in_host_a_empty_raises
+    description: "A: host '%var%.subdomain' with var='' produces empty leading label → InvalidData"
+    input:
+      zone_records: []
+      template_records:
+        - {type: A, host: "%var%.subdomain", pointsTo: "127.0.0.1", ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: ""}
+    expect:
+      exception: InvalidData
+
+  - id: param_var_prefix_in_host_a_simple
+    description: "A: host '%var%.subdomain' with a simple label produces nested subdomain"
+    input:
+      zone_records: []
+      template_records:
+        - {type: A, host: "%var%.subdomain", pointsTo: "127.0.0.1", ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: "sub"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: A, name: "sub.subdomain", data: "127.0.0.1", ttl: 300}
+
+  - id: param_var_prefix_in_host_a_dotted
+    description: "A: host '%var%.subdomain' with a multi-label value produces deeper nesting"
+    input:
+      zone_records: []
+      template_records:
+        - {type: A, host: "%var%.subdomain", pointsTo: "127.0.0.1", ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: "child.sub"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: A, name: "child.sub.subdomain", data: "127.0.0.1", ttl: 300}
+
+  - id: param_var_prefix_in_host_a_underscore
+    description: "A: host '%var%.subdomain' with an underscore label is accepted"
+    input:
+      zone_records: []
+      template_records:
+        - {type: A, host: "%var%.subdomain", pointsTo: "127.0.0.1", ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: "_dkim"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: A, name: "_dkim.subdomain", data: "127.0.0.1", ttl: 300}
+
+  # --- AAAA ---
+  - id: param_var_in_host_aaaa_empty_resolves_to_apex
+    description: "AAAA: host '%var%' with var='' resolves to apex (@)"
+    input:
+      zone_records: []
+      template_records:
+        - {type: AAAA, host: "%var%", pointsTo: "::1", ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: ""}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: AAAA, name: "@", data: "::1", ttl: 300}
+
+  - id: param_var_in_host_aaaa_simple
+    description: "AAAA: host '%var%' with a simple label produces a subdomain"
+    input:
+      zone_records: []
+      template_records:
+        - {type: AAAA, host: "%var%", pointsTo: "::1", ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: "sub"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: AAAA, name: "sub", data: "::1", ttl: 300}
+
+  - id: param_var_in_host_aaaa_dotted
+    description: "AAAA: host '%var%' with a multi-label value produces nested subdomain"
+    input:
+      zone_records: []
+      template_records:
+        - {type: AAAA, host: "%var%", pointsTo: "::1", ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: "child.sub"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: AAAA, name: "child.sub", data: "::1", ttl: 300}
+
+  - id: param_var_in_host_aaaa_underscore
+    description: "AAAA: host '%var%' with an underscore label is accepted"
+    input:
+      zone_records: []
+      template_records:
+        - {type: AAAA, host: "%var%", pointsTo: "::1", ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: "_v6host"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: AAAA, name: "_v6host", data: "::1", ttl: 300}
+
+  - id: param_var_prefix_in_host_aaaa_empty_raises
+    description: "AAAA: host '%var%.subdomain' with var='' produces empty leading label → InvalidData"
+    input:
+      zone_records: []
+      template_records:
+        - {type: AAAA, host: "%var%.subdomain", pointsTo: "::1", ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: ""}
+    expect:
+      exception: InvalidData
+
+  - id: param_var_prefix_in_host_aaaa_simple
+    description: "AAAA: host '%var%.subdomain' with a simple label produces nested subdomain"
+    input:
+      zone_records: []
+      template_records:
+        - {type: AAAA, host: "%var%.subdomain", pointsTo: "::1", ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: "sub"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: AAAA, name: "sub.subdomain", data: "::1", ttl: 300}
+
+  - id: param_var_prefix_in_host_aaaa_dotted
+    description: "AAAA: host '%var%.subdomain' with a multi-label value produces deeper nesting"
+    input:
+      zone_records: []
+      template_records:
+        - {type: AAAA, host: "%var%.subdomain", pointsTo: "::1", ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: "child.sub"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: AAAA, name: "child.sub.subdomain", data: "::1", ttl: 300}
+
+  - id: param_var_prefix_in_host_aaaa_underscore
+    description: "AAAA: host '%var%.subdomain' with an underscore label is accepted"
+    input:
+      zone_records: []
+      template_records:
+        - {type: AAAA, host: "%var%.subdomain", pointsTo: "::1", ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: "_v6host"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: AAAA, name: "_v6host.subdomain", data: "::1", ttl: 300}
+
+  # --- CNAME ---
+  - id: param_var_in_host_cname_empty_apex_raises
+    description: "CNAME: host '%var%' with var='' resolves to apex — apex CNAME is InvalidData"
+    input:
+      zone_records: []
+      template_records:
+        - {type: CNAME, host: "%var%", pointsTo: "target.example.com", ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: ""}
+    expect:
+      exception: InvalidData
+
+  - id: param_var_in_host_cname_simple
+    description: "CNAME: host '%var%' with a simple label produces a subdomain CNAME"
+    input:
+      zone_records: []
+      template_records:
+        - {type: CNAME, host: "%var%", pointsTo: "target.example.com", ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: "sub"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: CNAME, name: "sub", data: "target.example.com", ttl: 300}
+
+  - id: param_var_in_host_cname_dotted
+    description: "CNAME: host '%var%' with a multi-label value produces nested subdomain CNAME"
+    input:
+      zone_records: []
+      template_records:
+        - {type: CNAME, host: "%var%", pointsTo: "target.example.com", ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: "child.sub"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: CNAME, name: "child.sub", data: "target.example.com", ttl: 300}
+
+  - id: param_var_in_host_cname_underscore
+    description: "CNAME: host '%var%' with an underscore label is accepted"
+    input:
+      zone_records: []
+      template_records:
+        - {type: CNAME, host: "%var%", pointsTo: "target.example.com", ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: "_alias"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: CNAME, name: "_alias", data: "target.example.com", ttl: 300}
+
+  - id: param_var_prefix_in_host_cname_empty_raises
+    description: "CNAME: host '%var%.subdomain' with var='' produces empty leading label → InvalidData"
+    input:
+      zone_records: []
+      template_records:
+        - {type: CNAME, host: "%var%.subdomain", pointsTo: "target.example.com", ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: ""}
+    expect:
+      exception: InvalidData
+
+  - id: param_var_prefix_in_host_cname_simple
+    description: "CNAME: host '%var%.subdomain' with a simple label produces nested subdomain CNAME"
+    input:
+      zone_records: []
+      template_records:
+        - {type: CNAME, host: "%var%.subdomain", pointsTo: "target.example.com", ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: "sub"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: CNAME, name: "sub.subdomain", data: "target.example.com", ttl: 300}
+
+  - id: param_var_prefix_in_host_cname_dotted
+    description: "CNAME: host '%var%.subdomain' with a multi-label value produces deeper nesting"
+    input:
+      zone_records: []
+      template_records:
+        - {type: CNAME, host: "%var%.subdomain", pointsTo: "target.example.com", ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: "child.sub"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: CNAME, name: "child.sub.subdomain", data: "target.example.com", ttl: 300}
+
+  - id: param_var_prefix_in_host_cname_underscore
+    description: "CNAME: host '%var%.subdomain' with an underscore label is accepted"
+    input:
+      zone_records: []
+      template_records:
+        - {type: CNAME, host: "%var%.subdomain", pointsTo: "target.example.com", ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: "_alias"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: CNAME, name: "_alias.subdomain", data: "target.example.com", ttl: 300}
+
+  # --- TXT ---
+  - id: param_var_in_host_txt_empty_resolves_to_apex
+    description: "TXT: host '%var%' with var='' resolves to apex (@)"
+    input:
+      zone_records: []
+      template_records:
+        - {type: TXT, host: "%var%", data: "v=spf1 ~all", ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: ""}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: TXT, name: "@", data: "v=spf1 ~all", ttl: 300}
+
+  - id: param_var_in_host_txt_simple
+    description: "TXT: host '%var%' with a simple label produces a subdomain TXT"
+    input:
+      zone_records: []
+      template_records:
+        - {type: TXT, host: "%var%", data: "v=spf1 ~all", ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: "sub"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: TXT, name: "sub", data: "v=spf1 ~all", ttl: 300}
+
+  - id: param_var_in_host_txt_dotted
+    description: "TXT: host '%var%' with a multi-label value produces nested subdomain TXT"
+    input:
+      zone_records: []
+      template_records:
+        - {type: TXT, host: "%var%", data: "v=spf1 ~all", ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: "child.sub"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: TXT, name: "child.sub", data: "v=spf1 ~all", ttl: 300}
+
+  - id: param_var_in_host_txt_underscore
+    description: "TXT: host '%var%' with an underscore label is accepted (e.g. _dmarc)"
+    input:
+      zone_records: []
+      template_records:
+        - {type: TXT, host: "%var%", data: "v=DMARC1; p=none", ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: "_dmarc"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: TXT, name: "_dmarc", data: "v=DMARC1; p=none", ttl: 300}
+
+  - id: param_var_prefix_in_host_txt_empty_raises
+    description: "TXT: host '%var%.subdomain' with var='' produces empty leading label → InvalidData"
+    input:
+      zone_records: []
+      template_records:
+        - {type: TXT, host: "%var%.subdomain", data: "v=spf1 ~all", ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: ""}
+    expect:
+      exception: InvalidData
+
+  - id: param_var_prefix_in_host_txt_simple
+    description: "TXT: host '%var%.subdomain' with a simple label produces nested subdomain TXT"
+    input:
+      zone_records: []
+      template_records:
+        - {type: TXT, host: "%var%.subdomain", data: "v=spf1 ~all", ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: "sub"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: TXT, name: "sub.subdomain", data: "v=spf1 ~all", ttl: 300}
+
+  - id: param_var_prefix_in_host_txt_dotted
+    description: "TXT: host '%var%.subdomain' with a multi-label value produces deeper nesting"
+    input:
+      zone_records: []
+      template_records:
+        - {type: TXT, host: "%var%.subdomain", data: "v=spf1 ~all", ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: "child.sub"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: TXT, name: "child.sub.subdomain", data: "v=spf1 ~all", ttl: 300}
+
+  - id: param_var_prefix_in_host_txt_underscore
+    description: "TXT: host '%var%.subdomain' with an underscore label is accepted"
+    input:
+      zone_records: []
+      template_records:
+        - {type: TXT, host: "%var%.subdomain", data: "v=spf1 ~all", ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: "_dmarc"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: TXT, name: "_dmarc.subdomain", data: "v=spf1 ~all", ttl: 300}
+
+  # --- MX ---
+  - id: param_var_in_host_mx_empty_resolves_to_apex
+    description: "MX: host '%var%' with var='' resolves to apex (@)"
+    input:
+      zone_records: []
+      template_records:
+        - {type: MX, host: "%var%", pointsTo: "mail.example.com", priority: 10, ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: ""}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: MX, name: "@", data: "mail.example.com", priority: 10, ttl: 300}
+
+  - id: param_var_in_host_mx_simple
+    description: "MX: host '%var%' with a simple label produces a subdomain MX"
+    input:
+      zone_records: []
+      template_records:
+        - {type: MX, host: "%var%", pointsTo: "mail.example.com", priority: 10, ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: "sub"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: MX, name: "sub", data: "mail.example.com", priority: 10, ttl: 300}
+
+  - id: param_var_in_host_mx_dotted
+    description: "MX: host '%var%' with a multi-label value produces nested subdomain MX"
+    input:
+      zone_records: []
+      template_records:
+        - {type: MX, host: "%var%", pointsTo: "mail.example.com", priority: 10, ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: "child.sub"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: MX, name: "child.sub", data: "mail.example.com", priority: 10, ttl: 300}
+
+  - id: param_var_in_host_mx_underscore
+    description: "MX: host '%var%' with an underscore label is accepted"
+    input:
+      zone_records: []
+      template_records:
+        - {type: MX, host: "%var%", pointsTo: "mail.example.com", priority: 10, ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: "_mail"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: MX, name: "_mail", data: "mail.example.com", priority: 10, ttl: 300}
+
+  - id: param_var_prefix_in_host_mx_empty_raises
+    description: "MX: host '%var%.subdomain' with var='' produces empty leading label → InvalidData"
+    input:
+      zone_records: []
+      template_records:
+        - {type: MX, host: "%var%.subdomain", pointsTo: "mail.example.com", priority: 10, ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: ""}
+    expect:
+      exception: InvalidData
+
+  - id: param_var_prefix_in_host_mx_simple
+    description: "MX: host '%var%.subdomain' with a simple label produces nested subdomain MX"
+    input:
+      zone_records: []
+      template_records:
+        - {type: MX, host: "%var%.subdomain", pointsTo: "mail.example.com", priority: 10, ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: "sub"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: MX, name: "sub.subdomain", data: "mail.example.com", priority: 10, ttl: 300}
+
+  - id: param_var_prefix_in_host_mx_dotted
+    description: "MX: host '%var%.subdomain' with a multi-label value produces deeper nesting"
+    input:
+      zone_records: []
+      template_records:
+        - {type: MX, host: "%var%.subdomain", pointsTo: "mail.example.com", priority: 10, ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: "child.sub"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: MX, name: "child.sub.subdomain", data: "mail.example.com", priority: 10, ttl: 300}
+
+  - id: param_var_prefix_in_host_mx_underscore
+    description: "MX: host '%var%.subdomain' with an underscore label is accepted"
+    input:
+      zone_records: []
+      template_records:
+        - {type: MX, host: "%var%.subdomain", pointsTo: "mail.example.com", priority: 10, ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: "_mail"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: MX, name: "_mail.subdomain", data: "mail.example.com", priority: 10, ttl: 300}
+
+  # --- NS ---
+  - id: param_var_in_host_ns_empty_resolves_to_apex
+    description: "NS: host '%var%' with var='' resolves to apex (@)"
+    input:
+      zone_records: []
+      template_records:
+        - {type: NS, host: "%var%", pointsTo: "ns1.example.com", ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: ""}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: NS, name: "@", data: "ns1.example.com", ttl: 300}
+
+  - id: param_var_in_host_ns_simple
+    description: "NS: host '%var%' with a simple label produces a delegation NS"
+    input:
+      zone_records: []
+      template_records:
+        - {type: NS, host: "%var%", pointsTo: "ns1.example.com", ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: "sub"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: NS, name: "sub", data: "ns1.example.com", ttl: 300}
+
+  - id: param_var_in_host_ns_dotted
+    description: "NS: host '%var%' with a multi-label value produces nested delegation NS"
+    input:
+      zone_records: []
+      template_records:
+        - {type: NS, host: "%var%", pointsTo: "ns1.example.com", ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: "child.sub"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: NS, name: "child.sub", data: "ns1.example.com", ttl: 300}
+
+  - id: param_var_in_host_ns_underscore
+    description: "NS: host '%var%' with an underscore label is accepted"
+    input:
+      zone_records: []
+      template_records:
+        - {type: NS, host: "%var%", pointsTo: "ns1.example.com", ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: "_ns"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: NS, name: "_ns", data: "ns1.example.com", ttl: 300}
+
+  - id: param_var_prefix_in_host_ns_empty_raises
+    description: "NS: host '%var%.subdomain' with var='' produces empty leading label → InvalidData"
+    input:
+      zone_records: []
+      template_records:
+        - {type: NS, host: "%var%.subdomain", pointsTo: "ns1.example.com", ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: ""}
+    expect:
+      exception: InvalidData
+
+  - id: param_var_prefix_in_host_ns_simple
+    description: "NS: host '%var%.subdomain' with a simple label produces a nested delegation NS"
+    input:
+      zone_records: []
+      template_records:
+        - {type: NS, host: "%var%.subdomain", pointsTo: "ns1.example.com", ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: "sub"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: NS, name: "sub.subdomain", data: "ns1.example.com", ttl: 300}
+
+  - id: param_var_prefix_in_host_ns_dotted
+    description: "NS: host '%var%.subdomain' with a multi-label value produces deeper nesting"
+    input:
+      zone_records: []
+      template_records:
+        - {type: NS, host: "%var%.subdomain", pointsTo: "ns1.example.com", ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: "child.sub"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: NS, name: "child.sub.subdomain", data: "ns1.example.com", ttl: 300}
+
+  - id: param_var_prefix_in_host_ns_underscore
+    description: "NS: host '%var%.subdomain' with an underscore label is accepted"
+    input:
+      zone_records: []
+      template_records:
+        - {type: NS, host: "%var%.subdomain", pointsTo: "ns1.example.com", ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: "_ns"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: NS, name: "_ns.subdomain", data: "ns1.example.com", ttl: 300}
+
+  # --- SRV (uses 'name' field instead of 'host') ---
+  - id: param_var_in_host_srv_empty_raises
+    description: "SRV: name '%var%' with var='' would produce '_tcp.@' which is invalid → InvalidData"
+    input:
+      zone_records: []
+      template_records:
+        - {type: SRV, name: "%var%", target: "sip.example.com", protocol: TCP,
+           service: sip.example.com, priority: 10, weight: 20, port: 5060, ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: ""}
+    expect:
+      exception: InvalidData
+
+  - id: param_var_in_host_srv_simple
+    description: "SRV: name '%var%' with a simple label produces a subdomain SRV"
+    input:
+      zone_records: []
+      template_records:
+        - {type: SRV, name: "%var%", target: "sip.example.com", protocol: TCP,
+           service: sip.example.com, priority: 10, weight: 20, port: 5060, ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: "_sip"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: SRV, name: "_sip", data: "sip.example.com", protocol: tcp,
+           service: sip.example.com, priority: 10, weight: 20, port: 5060, ttl: 300}
+
+  - id: param_var_in_host_srv_dotted
+    description: "SRV: name '%var%' with a multi-label value produces nested SRV name"
+    input:
+      zone_records: []
+      template_records:
+        - {type: SRV, name: "%var%", target: "sip.example.com", protocol: tcp,
+           service: sip.example.com, priority: 10, weight: 20, port: 5060, ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: "_sip._tcp"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: SRV, name: "_sip._tcp", data: "sip.example.com", protocol: tcp,
+           service: sip.example.com, priority: 10, weight: 20, port: 5060, ttl: 300}
+
+  - id: param_var_in_host_srv_underscore
+    description: "SRV: name '%var%' with an underscore label is accepted"
+    input:
+      zone_records: []
+      template_records:
+        - {type: SRV, name: "%var%", target: "sip.example.com", protocol: TCP,
+           service: sip.example.com, priority: 10, weight: 20, port: 5060, ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: "_xmpp"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: SRV, name: "_xmpp", data: "sip.example.com", protocol: tcp,
+           service: sip.example.com, priority: 10, weight: 20, port: 5060, ttl: 300}
+
+  - id: param_var_prefix_in_host_srv_empty_raises
+    description: "SRV: name '%var%._tcp' with var='' produces empty leading label → InvalidData"
+    input:
+      zone_records: []
+      template_records:
+        - {type: SRV, name: "%var%._tcp", target: "sip.example.com", protocol: TCP,
+           service: sip.example.com, priority: 10, weight: 20, port: 5060, ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: ""}
+    expect:
+      exception: InvalidData
+
+  - id: param_var_prefix_in_host_srv_simple
+    description: "SRV: name '%var%._tcp' with a simple label produces a nested SRV name"
+    input:
+      zone_records: []
+      template_records:
+        - {type: SRV, name: "%var%._tcp", target: "sip.example.com", protocol: TCP,
+           service: sip.example.com, priority: 10, weight: 20, port: 5060, ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: "_sip"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: SRV, name: "_sip._tcp", data: "sip.example.com", protocol: tcp,
+           service: sip.example.com, priority: 10, weight: 20, port: 5060, ttl: 300}
+
+  - id: param_var_prefix_in_host_srv_dotted
+    description: "SRV: name '%var%._tcp' with a multi-label value produces deeper nesting"
+    input:
+      zone_records: []
+      template_records:
+        - {type: SRV, name: "%var%._tcp", target: "sip.example.com", protocol: TCP,
+           service: sip.example.com, priority: 10, weight: 20, port: 5060, ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: "_sip.sub"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: SRV, name: "_sip.sub._tcp", data: "sip.example.com", protocol: tcp,
+           service: sip.example.com, priority: 10, weight: 20, port: 5060, ttl: 300}
+
+  - id: param_var_prefix_in_host_srv_underscore
+    description: "SRV: name '%var%._tcp' with an underscore label is accepted"
+    input:
+      zone_records: []
+      template_records:
+        - {type: SRV, name: "%var%._tcp", target: "sip.example.com", protocol: TCP,
+           service: sip.example.com, priority: 10, weight: 20, port: 5060, ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: "_xmpp"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: SRV, name: "_xmpp._tcp", data: "sip.example.com", protocol: tcp,
+           service: sip.example.com, priority: 10, weight: 20, port: 5060, ttl: 300}
+
+  # --- Custom type (CAA) ---
+  - id: param_var_in_host_caa_empty_resolves_to_apex
+    description: "CAA (custom): host '%var%' with var='' resolves to apex (@)"
+    input:
+      zone_records: []
+      template_records:
+        - {type: CAA, host: "%var%", data: '0 issue "letsencrypt.org"', ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: ""}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: CAA, name: "@", data: '0 issue "letsencrypt.org"', ttl: 300}
+
+  - id: param_var_in_host_caa_simple
+    description: "CAA (custom): host '%var%' with a simple label produces a subdomain CAA"
+    input:
+      zone_records: []
+      template_records:
+        - {type: CAA, host: "%var%", data: '0 issue "letsencrypt.org"', ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: "sub"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: CAA, name: "sub", data: '0 issue "letsencrypt.org"', ttl: 300}
+
+  - id: param_var_in_host_caa_dotted
+    description: "CAA (custom): host '%var%' with a multi-label value produces nested subdomain CAA"
+    input:
+      zone_records: []
+      template_records:
+        - {type: CAA, host: "%var%", data: '0 issue "letsencrypt.org"', ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: "child.sub"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: CAA, name: "child.sub", data: '0 issue "letsencrypt.org"', ttl: 300}
+
+  - id: param_var_in_host_caa_underscore
+    description: "CAA (custom): host '%var%' with an underscore label is accepted"
+    input:
+      zone_records: []
+      template_records:
+        - {type: CAA, host: "%var%", data: '0 issue "letsencrypt.org"', ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: "_pki"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: CAA, name: "_pki", data: '0 issue "letsencrypt.org"', ttl: 300}
+
+  - id: param_var_prefix_in_host_caa_empty_raises
+    description: "CAA (custom): host '%var%.subdomain' with var='' produces empty leading label → InvalidData"
+    input:
+      zone_records: []
+      template_records:
+        - {type: CAA, host: "%var%.subdomain", data: '0 issue "letsencrypt.org"', ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: ""}
+    expect:
+      exception: InvalidData
+
+  - id: param_var_prefix_in_host_caa_simple
+    description: "CAA (custom): host '%var%.subdomain' with a simple label produces nested subdomain CAA"
+    input:
+      zone_records: []
+      template_records:
+        - {type: CAA, host: "%var%.subdomain", data: '0 issue "letsencrypt.org"', ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: "sub"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: CAA, name: "sub.subdomain", data: '0 issue "letsencrypt.org"', ttl: 300}
+
+  - id: param_var_prefix_in_host_caa_dotted
+    description: "CAA (custom): host '%var%.subdomain' with a multi-label value produces deeper nesting"
+    input:
+      zone_records: []
+      template_records:
+        - {type: CAA, host: "%var%.subdomain", data: '0 issue "letsencrypt.org"', ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: "child.sub"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: CAA, name: "child.sub.subdomain", data: '0 issue "letsencrypt.org"', ttl: 300}
+
+  - id: param_var_prefix_in_host_caa_underscore
+    description: "CAA (custom): host '%var%.subdomain' with an underscore label is accepted"
+    input:
+      zone_records: []
+      template_records:
+        - {type: CAA, host: "%var%.subdomain", data: '0 issue "letsencrypt.org"', ttl: 300}
+      domain: foo.com
+      host: ""
+      params: {var: "_pki"}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: CAA, name: "_pki.subdomain", data: '0 issue "letsencrypt.org"', ttl: 300}
+
+  # ---------------------------------------------------------------------------
+  # Duplicate record skip tests — identical record already in zone
+  # ---------------------------------------------------------------------------
+
+  - id: duplicate_skip_txt
+    description: "TXT: identical record already in zone is not added again (no conflict rule)"
+    input:
+      zone_records:
+        - {type: TXT, name: "@", data: '"Hello World"', ttl: 1800}
+      template_records:
+        - {type: TXT, host: "@", data: '"Hello World"', ttl: 600}
+      domain: example.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 0
+      delete_count: 0
+      records:
+        - {type: TXT, name: "@", data: '"Hello World"', ttl: 1800}
+
+  - id: duplicate_skip_txt_dc
+    description: "TXT: identical record already in zone is not added again (no conflict rule, existing has _dc)"
+    input:
+      zone_records:
+        - {data: 'Hello World', name: '@', ttl: 1800, type: 'TXT', _dc: {record_id: '74688294'}}
+      template_records:
+        - {type: TXT, host: "@", data: '%RANDOMTEXT%', ttl: 600}
+      domain: example.com
+      host: ""
+      params: { RANDOMTEXT: 'Hello World'}
+    expect:
+      new_count: 0
+      delete_count: 0
+      records:
+        - {data: 'Hello World', name: '@', ttl: 1800, type: 'TXT', _dc: {record_id: '74688294'}}
+
+
+
+  - id: duplicate_skip_txt_case_diff
+    description: "TXT: identical record already in zone is not added again (no conflict rule, case diff)"
+    input:
+      zone_records:
+        - {type: TXT, name: "@", data: '"Hello World"', ttl: 1800}
+      template_records:
+        - {type: txt, host: "@", data: '"Hello World"', ttl: 600}
+      domain: example.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 0
+      delete_count: 0
+      records:
+        - {type: TXT, name: "@", data: '"Hello World"', ttl: 1800}
+
+  - id: duplicate_skip_txt_at_vs_empty
+    description: "TXT: identical record already in zone is not added again (no conflict rule, host @ vs. empty)"
+    input:
+      zone_records:
+        - {type: TXT, name: "@", data: '"Hello World"', ttl: 1800}
+      template_records:
+        - {type: TXT, host: "", data: '"Hello World"', ttl: 600}
+      domain: example.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 0
+      delete_count: 0
+      records:
+        - {type: TXT, name: "@", data: '"Hello World"', ttl: 1800}
+        
+  - id: duplicate_dont_skip_txt_case_diff
+    description: "TXT: Record with case difference in content is added."
+    input:
+      zone_records:
+        - {type: TXT, name: "@", data: '"Hello World"', ttl: 1800}
+      template_records:
+        - {type: TXT, host: "@", data: '"Hello WORLD"', ttl: 600}
+      domain: example.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: TXT, name: "@", data: '"Hello World"', ttl: 1800}
+        - {type: TXT, name: "@", data: '"Hello WORLD"', ttl: 600}
+
+  - id: duplicate_skip_a
+    description: "A: identical A record is replaced (conflict rule deletes old, new is added)"
+    input:
+      zone_records:
+        - {type: A, name: "@", data: "1.2.3.4", ttl: 300}
+      template_records:
+        - {type: A, host: "@", pointsTo: "1.2.3.4", ttl: 300}
+      domain: example.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 1
+      records:
+        - {type: A, name: "@", data: "1.2.3.4", ttl: 300}
+
+  - id: duplicate_skip_aaaa
+    description: "AAAA: identical AAAA record is replaced (conflict rule deletes old, new is added)"
+    input:
+      zone_records:
+        - {type: AAAA, name: "@", data: "2001:db8::1", ttl: 300}
+      template_records:
+        - {type: AAAA, host: "@", pointsTo: "2001:db8::1", ttl: 300}
+      domain: example.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 1
+      records:
+        - {type: AAAA, name: "@", data: "2001:db8::1", ttl: 300}
+
+  - id: duplicate_skip_cname
+    description: "CNAME: identical CNAME record is replaced (conflict rule deletes old, new is added)"
+    input:
+      zone_records:
+        - {type: CNAME, name: "www", data: "example.com.", ttl: 300}
+      template_records:
+        - {type: CNAME, host: "www", pointsTo: "example.com.", ttl: 300}
+      domain: example.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 1
+      records:
+        - {type: CNAME, name: "www", data: "example.com.", ttl: 300}
+
+  - id: duplicate_skip_mx
+    description: "MX: identical MX record is replaced (conflict rule deletes old, new is added)"
+    input:
+      zone_records:
+        - {type: MX, name: "@", data: "mail.example.com.", ttl: 300, priority: 10}
+      template_records:
+        - {type: MX, host: "@", pointsTo: "mail.example.com.", ttl: 300, priority: 10}
+      domain: example.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 1
+      records:
+        - {type: MX, name: "@", data: "mail.example.com.", ttl: 300, priority: 10}
+
+  - id: duplicate_skip_srv
+    description: "SRV: identical SRV record is replaced (conflict rule deletes old, new is added)"
+    input:
+      zone_records:
+        - {type: SRV, name: "_sip._tcp", data: "sip.example.com.", ttl: 300, priority: 10, weight: 20, port: 5060}
+      template_records:
+        - {type: SRV, name: "_sip._tcp", target: "sip.example.com.", ttl: 300, priority: 10, weight: 20, port: 5060, protocol: tcp, service: sip}
+      domain: example.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 1
+      records:
+        - {type: SRV, name: "_sip._tcp", data: "sip.example.com.", ttl: 300, priority: 10, weight: 20, port: 5060, protocol: tcp, service: sip}
+
+  - id: duplicate_skip_srv_case_diff
+    description: "SRV: identical SRV record is replaced (conflict rule deletes old, new is added, case diff)"
+    input:
+      zone_records:
+        - {type: SRV, name: "_sip._tcp", data: "sip.example.com.", ttl: 300, priority: 10, weight: 20, port: 5060}
+      template_records:
+        - {type: SRV, name: "_SIP._TCP", target: "SIP.EXAMPLE.COM.", ttl: 300, priority: 10, weight: 20, port: 5060, protocol: tcp, service: sip}
+      domain: example.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 1
+      records:
+        - {type: SRV, name: "_sip._tcp", data: "sip.example.com.", ttl: 300, priority: 10, weight: 20, port: 5060, protocol: tcp, service: sip}
+
+  - id: duplicate_skip_ns
+    description: "NS: identical NS record is replaced (conflict rule deletes old, new is added)"
+    input:
+      zone_records:
+        - {type: NS, name: "sub", data: "ns1.example.com.", ttl: 300}
+      template_records:
+        - {type: NS, host: "sub", pointsTo: "ns1.example.com.", ttl: 300}
+      domain: example.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 1
+      records:
+        - {type: NS, name: "sub", data: "ns1.example.com.", ttl: 300}
+
+  - id: duplicate_skip_caa
+    description: "CAA (custom): identical record already in zone is not added again"
+    input:
+      zone_records:
+        - {type: CAA, name: "@", data: '0 issue "letsencrypt.org"', ttl: 300}
+      template_records:
+        - {type: CAA, host: "@", data: '0 issue "letsencrypt.org"', ttl: 300}
+      domain: example.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 0
+      delete_count: 0
+      records:
+        - {type: CAA, name: "@", data: '0 issue "letsencrypt.org"', ttl: 300}
+
+  # ---------------------------------------------------------------------------
+  # Normalisation tests — zone_records and new_record case canonicalisation
+  # ---------------------------------------------------------------------------
+
+  - id: normalise_zone_type_uppercased
+    description: "Normalisation: zone record 'type' in lowercase is uppercased; final record carries uppercase type"
+    input:
+      zone_records:
+        - {type: a, name: "@", data: "1.2.3.4", ttl: 300}
+      template_records:
+        - {type: TXT, host: "sub", data: "hello", ttl: 300}
+      domain: example.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: A, name: "@", data: "1.2.3.4", ttl: 300}
+        - {type: TXT, name: "sub", data: "hello", ttl: 300}
+
+  - id: normalise_zone_name_lowercased
+    description: "Normalisation: zone record 'name' in mixed case is lowercased; final record carries lowercase name"
+    input:
+      zone_records:
+        - {type: A, name: "WWW", data: "1.2.3.4", ttl: 300}
+      template_records:
+        - {type: TXT, host: "sub", data: "hello", ttl: 300}
+      domain: example.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: A, name: "www", data: "1.2.3.4", ttl: 300}
+        - {type: TXT, name: "sub", data: "hello", ttl: 300}
+
+  - id: normalise_zone_data_lowercased_for_a
+    description: "Normalisation: zone record 'data' for A record is lowercased (no practical effect on IPs, but rule applies)"
+    input:
+      zone_records:
+        - {type: CNAME, name: "alias", data: "Target.Example.Com.", ttl: 300}
+      template_records:
+        - {type: TXT, host: "sub", data: "hello", ttl: 300}
+      domain: example.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: CNAME, name: "alias", data: "target.example.com.", ttl: 300}
+        - {type: TXT, name: "sub", data: "hello", ttl: 300}
+
+  - id: normalise_zone_txt_data_preserved
+    description: "Normalisation: zone record 'data' for TXT is NOT lowercased (case-sensitive content)"
+    input:
+      zone_records:
+        - {type: TXT, name: "@", data: "Hello World", ttl: 300}
+      template_records:
+        - {type: TXT, host: "sub", data: "other", ttl: 300}
+      domain: example.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: TXT, name: "@", data: "Hello World", ttl: 300}
+        - {type: TXT, name: "sub", data: "other", ttl: 300}
+
+  - id: normalise_zone_custom_data_preserved
+    description: "Normalisation: zone record 'data' for custom (CAA) type is NOT lowercased"
+    input:
+      zone_records:
+        - {type: CAA, name: "@", data: '0 issue "LetsEncrypt.Org"', ttl: 300}
+      template_records:
+        - {type: TXT, host: "sub", data: "hello", ttl: 300}
+      domain: example.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: CAA, name: "@", data: '0 issue "LetsEncrypt.Org"', ttl: 300}
+        - {type: TXT, name: "sub", data: "hello", ttl: 300}
+
+  - id: normalise_new_record_type_uppercased
+    description: "Normalisation: template 'type' in lowercase produces a final record with uppercase type"
+    input:
+      zone_records: []
+      template_records:
+        - {type: txt, host: "@", data: "hello", ttl: 300}
+      domain: example.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: TXT, name: "@", data: "hello", ttl: 300}
+
+  - id: normalise_new_record_name_lowercased
+    description: "Normalisation: resolved 'name' from mixed-case host is lowercased in the final record"
+    input:
+      zone_records: []
+      template_records:
+        - {type: A, host: "WWW", pointsTo: "1.2.3.4", ttl: 300}
+      domain: example.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 0
+      records:
+        - {type: A, name: "www", data: "1.2.3.4", ttl: 300}
+
+  - id: normalise_conflict_detection_uses_normalised_name
+    description: "Normalisation: conflict detection works correctly when zone record name has mixed case"
+    input:
+      zone_records:
+        - {type: A, name: "WWW", data: "1.2.3.4", ttl: 300}
+        - {type: CNAME, name: "WWW", data: "example.com.", ttl: 300}
+      template_records:
+        - {type: A, host: "www", pointsTo: "5.6.7.8", ttl: 300}
+      domain: example.com
+      host: ""
+      params: {}
+    expect:
+      new_count: 1
+      delete_count: 2
+      records:
+        - {type: A, name: "www", data: "5.6.7.8", ttl: 300}
+

@@ -28,6 +28,7 @@ Thumbs.db
 
 # Cached templates
 templates/
+!template/testdata/dc-compliance/templates/
 
 # Environment
 .env
