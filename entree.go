@@ -16,6 +16,11 @@ type Record struct {
 	Port     int    // SRV port
 	Service  string // SRV service (e.g. "_sip")
 	Protocol string // SRV protocol (e.g. "_tcp")
+
+	// DC holds Domain Connect multi-instance metadata (_dc). Keys include
+	// "id", "providerId", "serviceId", "host", "essential". Nil when not
+	// multi-aware.
+	DC map[string]interface{} `json:"_dc,omitempty"`
 }
 
 // Zone represents a DNS zone.

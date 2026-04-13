@@ -1,6 +1,8 @@
 package template
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"net/url"
 	"regexp"
@@ -24,6 +26,13 @@ type ProcessOpts struct {
 	UniqueID        string // for multi-instance; random if empty + MultiAware
 	RedirectRecords []TemplateRecord
 	IgnoreSignature bool
+
+	// Signature verification fields.
+	Signature        string           // base64-encoded RSA signature
+	SigningKey       string           // key= parameter value (DNS host prefix)
+	QueryString      string           // the signed query string
+	SyncPubKeyDomain string           // from template JSON
+	PubKeyLookup     PubKeyLookupFunc // DNS TXT lookup; nil = use net.LookupTXT
 }
 
 // ProcessResult holds the output of ProcessRecords.
@@ -95,6 +104,17 @@ var processVarRegex = regexp.MustCompile(`%([a-zA-Z0-9_-]+)%`)
 
 // ProcessRecords implements the DC spec's process_records zone-apply algorithm.
 func ProcessRecords(opts ProcessOpts) (*ProcessResult, error) {
+	// Signature verification (before any zone mutations).
+	if opts.Signature != "" && !opts.IgnoreSignature {
+		lookup := opts.PubKeyLookup
+		if lookup == nil {
+			lookup = defaultPubKeyLookup
+		}
+		if err := VerifySignature(opts.QueryString, opts.Signature, opts.SigningKey, opts.SyncPubKeyDomain, lookup); err != nil {
+			return nil, err
+		}
+	}
+
 	domain := strings.ToLower(opts.Domain)
 	host := opts.Host
 
@@ -382,7 +402,7 @@ func ProcessRecords(opts ProcessOpts) (*ProcessResult, error) {
 			if resolvedPointsTo == "" {
 				return nil, &InvalidDataError{Msg: fmt.Sprintf("record %d: %s pointsTo is empty", i, typ)}
 			}
-			if err := validatePointsTo(typ, resolvedPointsTo); err != nil {
+			if err := processValidateIP(typ, resolvedPointsTo); err != nil {
 				return nil, &InvalidDataError{Msg: fmt.Sprintf("record %d pointsTo: %v", i, err)}
 			}
 			rec = entree.Record{
@@ -476,15 +496,59 @@ func ProcessRecords(opts ProcessOpts) (*ProcessResult, error) {
 		zone[i] = normalizeRecord(r)
 	}
 
+	// Multi-aware unique ID generation.
+	uniqueID := opts.UniqueID
+	if opts.MultiAware && uniqueID == "" {
+		b := make([]byte, 4)
+		_, _ = rand.Read(b)
+		uniqueID = hex.EncodeToString(b)
+	}
+
+	var toAdd []entree.Record
+	var toDelete []entree.Record
+
+	// Multi-aware pre-deletion: remove records owned by the same provider
+	// before applying the new template.
+	var essentialAlwaysCandidates []entree.Record // may be restored later
+	if opts.MultiAware {
+		var multiDels []entree.Record
+		for _, zr := range zone {
+			if zr.DC == nil {
+				continue
+			}
+			zrProvider, _ := zr.DC["providerId"].(string)
+			zrService, _ := zr.DC["serviceId"].(string)
+			zrID, _ := zr.DC["id"].(string)
+			zrEssential, _ := zr.DC["essential"].(string)
+
+			sameService := zrProvider == opts.ProviderID && zrService == opts.ServiceID
+
+			if opts.MultiInstance {
+				if sameService && zrID == uniqueID {
+					multiDels = append(multiDels, zr)
+				}
+			} else if sameService {
+				// Same service re-apply: replace all.
+				multiDels = append(multiDels, zr)
+			} else if zrProvider == opts.ProviderID {
+				// Different service, same provider.
+				if zrEssential == "Always" {
+					// Tentatively delete; may restore if no conflict.
+					essentialAlwaysCandidates = append(essentialAlwaysCandidates, zr)
+				}
+				multiDels = append(multiDels, zr)
+			}
+		}
+		toDelete = append(toDelete, multiDels...)
+		zone = removeRecords(zone, multiDels)
+	}
+
 	// Track original zone records so SRV conflict resolution only targets
 	// pre-existing records, not records added by this template batch.
 	originalZone := make(map[string]int)
 	for _, r := range zone {
 		originalZone[recordKey(r)]++
 	}
-
-	var toAdd []entree.Record
-	var toDelete []entree.Record
 
 	// Process each resolved record against the zone.
 	for _, re := range resolved {
@@ -685,11 +749,63 @@ func ProcessRecords(opts ProcessOpts) (*ProcessResult, error) {
 		}
 	}
 
+	// Restore essential=Always records from different-service deletion if they
+	// don't conflict with any newly added record (same type+name).
+	// However, if ANY essential=Always record from the same old instance
+	// directly conflicts with a new record, ALL records from that instance
+	// are cascade-deleted (no restoration).
+	if len(essentialAlwaysCandidates) > 0 {
+		// Check if any essential=Always candidate conflicts with new records.
+		anyConflict := false
+		for _, ea := range essentialAlwaysCandidates {
+			for _, added := range toAdd {
+				if strings.ToUpper(added.Type) == strings.ToUpper(ea.Type) && nameEq(added.Name, ea.Name) {
+					anyConflict = true
+					break
+				}
+			}
+			if anyConflict {
+				break
+			}
+		}
+		// Only restore if no essential=Always record conflicted.
+		if !anyConflict {
+			for _, ea := range essentialAlwaysCandidates {
+				toDelete = removeRecords(toDelete, []entree.Record{ea})
+				zone = append(zone, ea)
+			}
+		}
+	}
+
 	// Deduplicate toAdd.
 	toAdd = deduplicateRecords(toAdd)
 
 	// Deduplicate toDelete.
 	toDelete = deduplicateRecords(toDelete)
+
+	// Stamp _dc metadata on added records when multi-aware.
+	if opts.MultiAware {
+		for i := range toAdd {
+			essential := ""
+			// Find the essential value from the source template record.
+			for _, re := range resolved {
+				if recordKey(re.rec) == recordKey(toAdd[i]) {
+					essential = re.tmplRec.Essential
+					break
+				}
+			}
+			if essential == "" {
+				essential = "Always"
+			}
+			toAdd[i].DC = map[string]interface{}{
+				"id":         uniqueID,
+				"providerId": opts.ProviderID,
+				"serviceId":  opts.ServiceID,
+				"host":       host,
+				"essential":  essential,
+			}
+		}
+	}
 
 	return &ProcessResult{
 		ToAdd:    toAdd,
@@ -857,6 +973,41 @@ func processValidateLabel(label string) error {
 			(c >= '0' && c <= '9') || c == '-' || c == '_'
 		if !ok {
 			return fmt.Errorf("DNS label contains invalid character %q", c)
+		}
+	}
+	return nil
+}
+
+// processValidateIP validates IP-like values for A/AAAA records.
+// Lenient: accepts numeric-only dot-separated values for A (including 3-octet
+// shorthand like 132.148.25), and hex-colon values for AAAA. Rejects hostnames,
+// URLs, and whitespace.
+func processValidateIP(typ, val string) error {
+	if strings.ContainsAny(val, " \t") {
+		return fmt.Errorf("contains whitespace")
+	}
+	switch typ {
+	case "A":
+		// Must contain only digits and dots, and at least one dot.
+		if !strings.Contains(val, ".") {
+			return fmt.Errorf("invalid IPv4 address")
+		}
+		for _, c := range val {
+			if c != '.' && (c < '0' || c > '9') {
+				return fmt.Errorf("invalid IPv4 address")
+			}
+		}
+	case "AAAA":
+		// Must contain a colon (IPv6), only hex digits, colons, and dots (mapped v4).
+		if !strings.Contains(val, ":") {
+			return fmt.Errorf("invalid IPv6 address")
+		}
+		for _, c := range val {
+			ok := (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
+				(c >= 'A' && c <= 'F') || c == ':' || c == '.'
+			if !ok {
+				return fmt.Errorf("invalid IPv6 address")
+			}
 		}
 	}
 	return nil

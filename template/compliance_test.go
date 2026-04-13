@@ -148,42 +148,8 @@ type testExpect struct {
 // ---------------------------------------------------------------------------
 
 // skipExact lists specific test IDs still skipped and why.
-var skipExact = map[string]string{
-	// Multi-aware / multi-instance: requires _dc metadata tracking which is
-	// a fundamentally different storage model (provenance per record).
-	"multi_reapply_same_template":              "multi-aware: requires _dc metadata tracking",
-	"multi_reapply_txt_without_multi_instance": "multi-aware: requires _dc metadata tracking",
-	"multi_reapply_txt_with_multi_instance":    "multi-aware: requires _dc metadata tracking",
-	"multi_different_template_cascade_delete":  "multi-aware: requires _dc metadata tracking",
-	"multi_essential_blocks_delete":            "multi-aware: requires _dc metadata tracking",
-
-	// Integer field concatenation validation - DC spec requires integer fields
-	// to be a single bare %variable% or literal, no concatenation. Our engine
-	// is intentionally lenient: it substitutes then parses, so %a%%b% with
-	// a=30,b=0 yields 300 (valid int). Known gap kept intentionally.
-	"ttl_two_vars_invalid":              "intentionally lenient: we parse after substitution",
-	"ttl_const_prefix_invalid":          "intentionally lenient: we parse after substitution",
-	"ttl_const_suffix_invalid":          "intentionally lenient: we parse after substitution",
-	"mx_priority_two_vars_invalid":      "intentionally lenient: we parse after substitution",
-	"mx_priority_const_prefix_invalid":  "intentionally lenient: we parse after substitution",
-	"mx_priority_const_suffix_invalid":  "intentionally lenient: we parse after substitution",
-	"srv_priority_two_vars_invalid":     "intentionally lenient: we parse after substitution",
-	"srv_priority_const_prefix_invalid": "intentionally lenient: we parse after substitution",
-	"srv_weight_two_vars_invalid":       "intentionally lenient: we parse after substitution",
-	"srv_weight_const_suffix_invalid":   "intentionally lenient: we parse after substitution",
-	"srv_port_two_vars_invalid":         "intentionally lenient: we parse after substitution",
-	"srv_port_const_prefix_invalid":     "intentionally lenient: we parse after substitution",
-
-	// apply_template tests requiring signature verification (cannot test without
-	// DNS-based public key lookup or mocking).
-	"template_apply_sig_verified": "requires DNS public key lookup for signature verification",
-
-	// apply_template multi-aware tests.
-	"template_multi_simple":                   "multi-aware: requires _dc metadata tracking",
-	"template_multi_simple_no_id":             "multi-aware: requires _dc metadata tracking",
-	"template_multi_aware_reapply":            "multi-aware: requires _dc metadata tracking",
-	"template_multi_instance_add_no_conflict": "multi-aware: requires _dc metadata tracking",
-}
+// All 22 previously-skipped tests are now implemented.
+var skipExact = map[string]string{}
 
 func shouldSkip(id string) (bool, string) {
 	if reason, ok := skipExact[id]; ok {
@@ -209,6 +175,9 @@ func matchException(err error, expected string) bool {
 		return errors.As(err, &e)
 	case "InvalidTemplate":
 		var e *InvalidTemplateError
+		return errors.As(err, &e)
+	case "InvalidSignature":
+		var e *InvalidSignatureError
 		return errors.As(err, &e)
 	case "TypeError":
 		var e *TypeErrorError
@@ -423,18 +392,30 @@ func runApplyTemplateTest(t *testing.T, tc testCase) bool {
 		zoneRecs = append(zoneRecs, zoneRecordToEntree(zr))
 	}
 
-	result, err := ProcessRecords(ProcessOpts{
-		Domain:          strings.ToLower(tc.Input.Domain),
-		Host:            strings.ToLower(host),
-		ZoneRecords:     zoneRecs,
-		TemplateRecords: tmpl.Records,
-		Variables:       tc.Input.Params,
-		GroupIDs:        tc.Input.GroupIDs,
-		MultiAware:      tc.Input.MultiAware,
-		UniqueID:        tc.Input.UniqueID,
-		RedirectRecords: defaultRedirRecs,
-		IgnoreSignature: tc.Input.IgnoreSignature,
-	})
+	opts := ProcessOpts{
+		Domain:           strings.ToLower(tc.Input.Domain),
+		Host:             strings.ToLower(host),
+		ZoneRecords:      zoneRecs,
+		TemplateRecords:  tmpl.Records,
+		Variables:        tc.Input.Params,
+		GroupIDs:         tc.Input.GroupIDs,
+		MultiAware:       tc.Input.MultiAware,
+		MultiInstance:    tc.Input.MultiInstance || tmpl.MultiInstance,
+		UniqueID:         tc.Input.UniqueID,
+		ProviderID:       tc.Input.ProviderID,
+		ServiceID:        tc.Input.ServiceID,
+		RedirectRecords:  defaultRedirRecs,
+		IgnoreSignature:  tc.Input.IgnoreSignature,
+		Signature:        tc.Input.Sig,
+		SigningKey:       tc.Input.Key,
+		QueryString:      tc.Input.QS,
+		SyncPubKeyDomain: tmpl.SyncPubKeyDomain,
+	}
+	if opts.Signature != "" && !opts.IgnoreSignature {
+		opts.PubKeyLookup = dcTestPubKeyLookup
+	}
+
+	result, err := ProcessRecords(opts)
 
 	if tc.Expect.Exception != "" {
 		if err != nil {
@@ -541,8 +522,41 @@ func compareZoneState(t *testing.T, tc testCase, zone []entree.Record, result *P
 			t.Errorf("record[%d] priority: got %d, want %d", i, g.Priority, e.Priority)
 			ok = false
 		}
+		// Compare _dc metadata when expected.
+		if len(e.DC) > 0 {
+			if !dcMetadataMatch(g.DC, e.DC) {
+				t.Errorf("record[%d] _dc: got %v, want %v", i, g.DC, e.DC)
+				ok = false
+			}
+		}
 	}
 	return ok
+}
+
+// dcMetadataMatch compares _dc metadata maps. The sentinel value
+// "<test only: random>" matches any non-empty string (for random unique IDs).
+func dcMetadataMatch(got, want map[string]interface{}) bool {
+	if len(got) == 0 && len(want) > 0 {
+		return false
+	}
+	for k, wv := range want {
+		gv, exists := got[k]
+		if !exists {
+			return false
+		}
+		wStr := fmt.Sprintf("%v", wv)
+		gStr := fmt.Sprintf("%v", gv)
+		if wStr == "<test only: random>" {
+			if gStr == "" {
+				return false
+			}
+			continue
+		}
+		if gStr != wStr {
+			return false
+		}
+	}
+	return true
 }
 
 func buildFinalZone(zone []entree.Record, result *ProcessResult) []entree.Record {
@@ -626,7 +640,7 @@ func buildTemplateRecords(trs []templateRecord) []TemplateRecord {
 }
 
 func zoneRecordToEntree(zr zoneRecord) entree.Record {
-	return entree.Record{
+	r := entree.Record{
 		Type:     strings.ToUpper(zr.Type),
 		Name:     zr.Name,
 		Content:  zr.Data,
@@ -637,6 +651,13 @@ func zoneRecordToEntree(zr zoneRecord) entree.Record {
 		Service:  zr.Service,
 		Protocol: strings.ToLower(zr.Protocol),
 	}
+	if len(zr.DC) > 0 {
+		r.DC = make(map[string]interface{})
+		for k, v := range zr.DC {
+			r.DC[k] = v
+		}
+	}
+	return r
 }
 
 func toFlexInt(y yamlFlexInt) flexInt {
@@ -709,6 +730,22 @@ func pct(a, b int) float64 {
 		return 0
 	}
 	return float64(a) / float64(b) * 100
+}
+
+// dcTestPubKeyLookup returns canned TXT records for DC test key lookups.
+// These mirror the live DNS records at _dck1.exampleservice.domainconnect.org.
+func dcTestPubKeyLookup(name string) ([]string, error) {
+	records := map[string][]string{
+		"_dck1.exampleservice.domainconnect.org": {
+			"p=1,a=RS256,d=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA18SgvpmeasN4BHkkv0SBjAzIc4grYLjiAXRtNiBUiGUDMeTzQrKTsWvy9NuxU1dIHCZy9o1CrKNg5EzLIZLNyMfI6qiXnM+HMd4byp97zs/3D39Q8iR5poubQcRaGozWx8yQpG0OcVdmEVcTfy",
+			"p=2,a=RS256,d=R/XSEWC5u16EBNvRnNAOAvZYUdWqVyQvXsjnxQot8KcK0QP8iHpoL/1dbdRy2opRPQ2FdZpovUgknybq/6FkeDtW7uCQ6Mvu4QxcUa3+WP9nYHKtgWip/eFxpeb+qLvcLHf1h0JXtxLVdyy6OLk3f2JRYUX2ZZVDvG3biTpeJz6iRzjGg6MfGxXZHjI8",
+			"p=3,a=RS256,d=weDjXrJwIDAQAB",
+		},
+	}
+	if txts, ok := records[name]; ok {
+		return txts, nil
+	}
+	return nil, fmt.Errorf("no TXT record for %s", name)
 }
 
 var _ = json.Marshal

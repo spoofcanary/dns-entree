@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"regexp"
 	"strings"
 )
 
@@ -20,6 +21,8 @@ type Template struct {
 	VariableDescription string           `json:"variableDescription"`
 	SyncPubKeyDomain    string           `json:"syncPubKeyDomain"`
 	SyncRedirectDomain  string           `json:"syncRedirectDomain"`
+	MultiInstance       bool             `json:"multiInstance"`
+	HostRequired        bool             `json:"hostRequired"`
 	Records             []TemplateRecord `json:"records"`
 
 	logger *slog.Logger
@@ -84,10 +87,20 @@ func (f *flexInt) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
+// singleVarRe matches exactly one bare %variable% with nothing else.
+var singleVarRe = regexp.MustCompile(`^%[a-zA-Z0-9_-]+%$`)
+
 // resolve returns the int value, substituting %var% from vars if Raw is set.
+// DC spec: integer fields must be either a plain integer literal or exactly
+// one bare %variable% token - no concatenation (prefix, suffix, or multiple
+// variables).
 func (f flexInt) resolve(vars map[string]string, recIdx int, field string) (int, error) {
 	if f.Raw == "" {
 		return f.Value, nil
+	}
+	// Strict validation: raw value containing % must be exactly one %var%.
+	if strings.Contains(f.Raw, "%") && !singleVarRe.MatchString(f.Raw) {
+		return 0, &InvalidDataError{Msg: fmt.Sprintf("record %d %s: integer field %q must be a plain integer or a single %%variable%%", recIdx, field, f.Raw)}
 	}
 	sub, err := substitute(f.Raw, vars, recIdx, field)
 	if err != nil {
