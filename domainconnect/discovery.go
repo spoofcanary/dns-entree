@@ -112,6 +112,12 @@ func Discover(ctx context.Context, domain string, opts ...DiscoverOption) (Disco
 	}
 
 	txt, err := o.txtResolver(ctx, "_domainconnect."+domain)
+	if (err != nil || len(txt) == 0) && strings.Count(domain, ".") > 1 {
+		// DC spec: subdomains inherit the parent zone's _domainconnect record.
+		parts := strings.Split(domain, ".")
+		parent := strings.Join(parts[len(parts)-2:], ".")
+		txt, err = o.txtResolver(ctx, "_domainconnect."+parent)
+	}
 	if err != nil || len(txt) == 0 {
 		return DiscoveryResult{Supported: false}, nil
 	}
