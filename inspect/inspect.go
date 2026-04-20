@@ -46,11 +46,21 @@ type DomainState struct {
 	DKIMSelectors []DKIMSelectorState `json:"dkim_selectors,omitempty"`
 
 	// DMARC
-	DMARCRecord       string   `json:"dmarc_record,omitempty"`
-	DMARCPolicy       string   `json:"dmarc_policy,omitempty"` // "none" | "quarantine" | "reject"
-	DMARCRuas         []string `json:"dmarc_ruas,omitempty"`
-	DMARCRufs         []string `json:"dmarc_rufs,omitempty"`
-	LegacyRuaDetected bool     `json:"legacy_rua_detected"` // rua/ruf mentions the legacy reporting host
+	DMARCRecord string   `json:"dmarc_record,omitempty"`
+	DMARCPolicy string   `json:"dmarc_policy,omitempty"` // "none" | "quarantine" | "reject"
+	DMARCRuas   []string `json:"dmarc_ruas,omitempty"`
+	DMARCRufs   []string `json:"dmarc_rufs,omitempty"`
+
+	// ReportsToCanonical is true when any rua/ruf address has InspectOpts.CanonicalRuaHost
+	// as its domain part. Drives the UI's "should we offer to update rua?"
+	// question. Covers all cases: no rua at all, rua points at a competitor,
+	// rua uses a legacy host, etc.
+	ReportsToCanonical bool `json:"reports_to_canonical"`
+
+	// LegacyRuaDetected is true when any rua/ruf uses InspectOpts.LegacyRuaHost
+	// (separate from the canonical host). Used to show a more specific
+	// "you renamed" message vs a generic "we aren't receiving reports" one.
+	LegacyRuaDetected bool `json:"legacy_rua_detected"`
 
 	// Sender classification via esp
 	Senders []esp.SenderClassification `json:"senders,omitempty"`
@@ -65,9 +75,10 @@ type DKIMSelectorState struct {
 	HasTXT   bool   `json:"has_txt,omitempty"`
 }
 
-// InspectOpts configures an Inspect call. Zero value is valid and uses
-// sensible defaults (2s lookup timeout, DefaultDKIMSelectors from esp,
-// a legacy rua host of "dmarc.spoofcanary.com").
+// InspectOpts configures an Inspect call. Zero value is valid and skips
+// both the canonical-rua and legacy-rua checks (leaving ReportsToCanonical
+// and LegacyRuaDetected false regardless of the record contents). Callers
+// that want those flags populated must supply the hostnames.
 type InspectOpts struct {
 	// LookupTimeout caps each individual DNS lookup. Zero defaults to 2s.
 	LookupTimeout time.Duration
@@ -75,10 +86,16 @@ type InspectOpts struct {
 	// DKIMSelectors to probe. Zero defaults to esp.DefaultDKIMSelectors.
 	DKIMSelectors []string
 
-	// LegacyRuaHost is the hostname that flags a domain as using an
-	// outdated reporting destination (e.g., "dmarc.spoofcanary.com" when
-	// the current destination is dmarc.sendcanary.com). Zero skips the
-	// check.
+	// CanonicalRuaHost is the ingest hostname callers want reports
+	// delivered to (e.g., "dmarc.sendcanary.com"). When set, Inspect
+	// populates DomainState.ReportsToCanonical with true iff any rua/ruf
+	// in the DMARC record has this as its domain part. Zero skips the
+	// check. dns-entree itself does not care which host this is.
+	CanonicalRuaHost string
+
+	// LegacyRuaHost is an optional secondary hostname for a more specific
+	// "you renamed" UX, covering cases where a prior version of the
+	// product used a different ingest domain. Zero skips the check.
 	LegacyRuaHost string
 }
 
@@ -198,11 +215,12 @@ func Inspect(ctx context.Context, domain string, opts InspectOpts) (*DomainState
 				state.DMARCPolicy = parseDMARCPolicy(t)
 				state.DMARCRuas = parseDMARCAddrs(t, "rua")
 				state.DMARCRufs = parseDMARCAddrs(t, "ruf")
+				allAddrs := append(append([]string{}, state.DMARCRuas...), state.DMARCRufs...)
+				if opts.CanonicalRuaHost != "" {
+					state.ReportsToCanonical = ruaContainsHost(allAddrs, opts.CanonicalRuaHost)
+				}
 				if opts.LegacyRuaHost != "" {
-					state.LegacyRuaDetected = ruaContainsHost(
-						append(append([]string{}, state.DMARCRuas...), state.DMARCRufs...),
-						opts.LegacyRuaHost,
-					)
+					state.LegacyRuaDetected = ruaContainsHost(allAddrs, opts.LegacyRuaHost)
 				}
 				break
 			}

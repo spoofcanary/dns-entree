@@ -8,6 +8,15 @@ from v1.0.0 onward. During the v0.x line, breaking changes may land in any relea
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-04-20
+
+### Added
+- `inspect.InspectOpts.CanonicalRuaHost` and corresponding `DomainState.ReportsToCanonical`
+  flag. Lets callers ask "is any DMARC rua/ruf address pointing at the hostname I want
+  reports delivered to?" regardless of what that hostname is. Covers missing-rua,
+  third-party-rua, and renamed-ingest cases in one signal. dns-entree itself does not
+  bake in any product-specific hostname; the caller supplies it.
+
 ## [0.3.0] - 2026-04-20
 
 ### Added
