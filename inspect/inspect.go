@@ -12,6 +12,7 @@ import (
 	"time"
 
 	entree "github.com/spoofcanary/dns-entree"
+	"github.com/spoofcanary/dns-entree/domainconnect"
 	"github.com/spoofcanary/dns-entree/esp"
 )
 
@@ -32,6 +33,14 @@ type DomainState struct {
 	DNSProviderLabel string       `json:"dns_provider_label,omitempty"`
 	DNSProviderSupported bool     `json:"dns_provider_supported"` // tier-1 API support
 	DNSProviderMethod string      `json:"dns_provider_method,omitempty"` // ns_pattern | rdap_fallback
+
+	// DomainConnect discovery (RFC-like discovery via _domainconnect TXT).
+	// When Supported, the provider offers consent-based one-click DNS
+	// modification and the caller can redirect a user to URLSyncUX.
+	DomainConnectSupported    bool   `json:"domain_connect_supported"`
+	DomainConnectProviderID   string `json:"domain_connect_provider_id,omitempty"`
+	DomainConnectProviderName string `json:"domain_connect_provider_name,omitempty"`
+	DomainConnectSyncURL      string `json:"domain_connect_sync_url,omitempty"`
 
 	// Mail layer
 	MXHosts         []string `json:"mx_hosts,omitempty"`
@@ -186,6 +195,16 @@ func Inspect(ctx context.Context, domain string, opts InspectOpts) (*DomainState
 		state.DNSProviderSupported = det.Supported
 		state.DNSProviderMethod = det.Method
 	}
+
+	// Domain Connect discovery (best-effort; zero-valued on failure).
+	dcCtx, dcCancel := context.WithTimeout(ctx, timeout)
+	if dc, dcErr := domainconnect.Discover(dcCtx, domain); dcErr == nil && dc.Supported {
+		state.DomainConnectSupported = true
+		state.DomainConnectProviderID = dc.ProviderID
+		state.DomainConnectProviderName = dc.ProviderName
+		state.DomainConnectSyncURL = dc.URLSyncUX
+	}
+	dcCancel()
 
 	// MX + mailbox inference
 	if mx.err == nil {
