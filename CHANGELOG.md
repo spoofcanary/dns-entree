@@ -8,6 +8,23 @@ from v1.0.0 onward. During the v0.x line, breaking changes may land in any relea
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-04-20
+
+### Added
+- New `esp` package: Email Service Provider detection and classification
+  - `ClassifyDomain(ctx, domain, spf, selectors)` - full pipeline (SPF + DKIM)
+  - `ClassifyFromSPF(spf)` - synchronous, no-DNS top-level include classification
+  - `ClassifyFromSPFRecursive(ctx, resolver, spf)` - recursive SPF walk with SES-in-chain detection
+  - `ClassifyFromDKIM(ctx, resolver, domain, selectors)` - DKIM CNAME target classification
+- SES-backed sender detection: flags Resend, Loops, Bento, Customer.io, Salesforce transactional,
+  Stripe transactional, and raw Amazon SES as `Infrastructure: ses`, enabling consumers to route
+  to the correct integration (AWS IAM, ESP API, OAuth) regardless of which top-level ESP the
+  customer uses.
+- ESP catalog covering 30+ SPF include hosts and 13 DKIM CNAME target patterns, including
+  Salesforce (Sales Cloud, Service Cloud, Einstein Activity Capture), Marketing Cloud (ExactTarget),
+  Pardot, Mailchimp, SendGrid, Postmark, Mailgun, HubSpot, Google Workspace, Microsoft 365,
+  Zoho, Fastmail, iCloud.
+
 ## [0.1.0] - 2026-04-09
 
 ### Widget
