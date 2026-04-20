@@ -8,6 +8,24 @@ from v1.0.0 onward. During the v0.x line, breaking changes may land in any relea
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-04-20
+
+### Added
+- New `inspect` subpackage providing `Inspect(ctx, domain, opts) (*DomainState, error)`
+  for a single consolidated lookup pass:
+  - NS records + DNS provider classification (via `DetectFromNS`)
+  - MX records + mailbox provider inference (Google Workspace, M365, Zoho, etc.)
+  - SPF record + includes + lookup count
+  - DKIM selectors probed in parallel with CNAME/TXT target capture
+  - DMARC record + parsed policy + rua/ruf addresses
+  - `LegacyRuaDetected` flag when rua/ruf contains a caller-supplied legacy host
+  - Sender classification via the `esp` package
+- `CountSPFLookups` is now exported (was `countSPFLookups`). No behavior change.
+
+### Changed
+- None that affect existing callers beyond the `CountSPFLookups` rename, which
+  was previously unexported and therefore not part of the public API.
+
 ## [0.2.0] - 2026-04-20
 
 ### Added

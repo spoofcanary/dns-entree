@@ -140,12 +140,12 @@ func MergeSPF(current string, includes []string, opts ...MergeSPFOption) (MergeR
 		if rerr != nil {
 			res.Warnings = append(res.Warnings, "recursive SPF lookup count incomplete: "+rerr.Error())
 			// Fall back to surface count so callers always get a number.
-			res.LookupCount = countSPFLookups(res.Value)
+			res.LookupCount = CountSPFLookups(res.Value)
 		} else {
 			res.LookupCount = total
 		}
 	} else {
-		res.LookupCount = countSPFLookups(res.Value)
+		res.LookupCount = CountSPFLookups(res.Value)
 	}
 	if res.LookupCount > 10 {
 		res.LookupLimitExceeded = true
@@ -231,7 +231,7 @@ func stripQualifier(mech string) string {
 	return mech
 }
 
-func countSPFLookups(spf string) int {
+func CountSPFLookups(spf string) int {
 	count := 0
 	for _, tok := range strings.Fields(spf) {
 		low := strings.ToLower(tok)
