@@ -38,6 +38,9 @@ var nsPatterns = []nsPattern{
 	{"digitalocean.com", ProviderType("digitalocean")},
 	{"hetzner.com", ProviderType("hetzner")},
 	{"registrar-servers.com", ProviderType("namecheap")},
+	// Namecheap BasicDNS (the default free DNS for Namecheap-registered
+	// domains) uses orbit/horizon.dns-parking.com nameservers.
+	{"dns-parking.com", ProviderType("namecheap")},
 	{"nsone.net", ProviderType("ns1")},
 	{"dnsv.jp", ProviderType("dnsv")},
 	{"linode.com", ProviderType("linode")},
