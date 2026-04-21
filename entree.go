@@ -34,13 +34,16 @@ type Zone struct {
 // Each provider uses the fields it needs; unused fields are ignored.
 type Credentials struct {
 	APIToken  string // Cloudflare API token
-	APIKey    string // GoDaddy API key, or Cloudflare global key
+	APIKey    string // GoDaddy API key, Cloudflare global key, or Namecheap API key
 	APISecret string // GoDaddy API secret
 	AccessKey string // Route53 IAM access key
 	SecretKey string // Route53 IAM secret key
 	Region    string // Route53 region (default: "us-east-1")
 	Token     string // Google Cloud DNS OAuth2 bearer token
 	ProjectID string // Google Cloud DNS GCP project ID
+	APIUser   string // Namecheap ApiUser (account username that owns the API key)
+	Username  string // Namecheap UserName (domain owner; usually == APIUser)
+	ClientIP  string // Namecheap client IP (must be whitelisted in their account)
 }
 
 // ProviderType identifies a DNS provider.

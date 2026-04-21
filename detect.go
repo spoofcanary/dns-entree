@@ -69,10 +69,11 @@ var providerLabels = map[ProviderType]string{
 // Phase 1. Used for the Supported flag (D-19). Hardcoded to avoid registry
 // init-order coupling.
 var tier1Providers = map[ProviderType]bool{
-	ProviderCloudflare:     true,
-	ProviderRoute53:        true,
-	ProviderGoDaddy:        true,
-	ProviderGoogleCloudDNS: true,
+	ProviderCloudflare:         true,
+	ProviderRoute53:            true,
+	ProviderGoDaddy:            true,
+	ProviderGoogleCloudDNS:     true,
+	ProviderType("namecheap"):  true,
 }
 
 // DetectFromNS classifies a provider from a list of NS hostnames. Pure,
